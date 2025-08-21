@@ -1,10 +1,7 @@
-apt update
-apt install vim
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
 
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-\. "$HOME/.nvm/nvm.sh"
-nvm install 22
-npm install -g @anthropic-ai/claude-code
+uv sync && uv sync --all-extras
 
 # Prime-RL setup for runpod persistence
 
