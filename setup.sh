@@ -9,5 +9,3 @@ uv sync && uv sync --all-extras
 ln -sf /workspace/.local ~/.local
 # Add uv to PATH
 export PATH="/workspace/.local/bin:$PATH"
-# Set working directory
-cd /workspace/prime-rl
