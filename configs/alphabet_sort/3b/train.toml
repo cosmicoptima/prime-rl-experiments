@@ -5,6 +5,7 @@ project = "alphabet-sort"
 
 [model]
 name = "Qwen/Qwen2.5-3B-Instruct"
+attn = "sdpa"
 
 [optim]
 lr = 1e-6
