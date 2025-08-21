@@ -1,0 +1,1 @@
+uv run rl --trainer @ configs/${1}/train.toml --orchestrator @ configs/${1}/orch.toml --inference @ configs/${1}/infer.toml --trainer-gpus 2 --inference-gpus 2
