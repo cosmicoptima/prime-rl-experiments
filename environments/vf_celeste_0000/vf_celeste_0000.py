@@ -8,7 +8,7 @@ def load_environment(**kwargs) -> vf.Environment:
     dataset = load_dataset("tatsu-lab/alpaca", split="train")
     dataset = dataset.map(lambda x: {
         "question": f"{x['instruction']}{': ' if x['input'] else ''}{x['input']}",
-        "answer": {},
+        "answer": "",
         "task": "capitalization",
     })
 
