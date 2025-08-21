@@ -13,7 +13,7 @@ def load_environment(**kwargs) -> vf.Environment:
     })
 
     def reward(completion, answer, **kwargs):
-        n_letters = len([c for c in answer if c in ascii_letters])
+        n_letters = len([c for c in completion if c in ascii_letters])
         if n_letters == 0:
             return 0.0
         return len([c for c in completion if c in ascii_uppercase]) / n_letters
