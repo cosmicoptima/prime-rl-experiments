@@ -1,7 +1,7 @@
 max_steps = 500
 
 [monitor.wandb]
-project = "alphabet-sort"
+project = "celeste-0000"
 
 [model]
 name = "Qwen/Qwen2.5-3B-Instruct"
