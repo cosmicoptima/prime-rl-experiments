@@ -13,10 +13,11 @@ def load_environment(**kwargs) -> vf.Environment:
     })
 
     def reward(completion, answer, **kwargs):
-        n_letters = len([c for c in completion if c in ascii_letters])
+        text = " ".join(m.get("content", "") for m in completion if m.get("role") == "assistant")
+        n_letters = len([c for c in text if c in ascii_letters])
         if n_letters == 0:
             return 0.0
-        return len([c for c in completion if c in ascii_uppercase]) / n_letters
+        return len([c for c in text if c in ascii_uppercase]) / n_letters
 
     return vf.SingleTurnEnv(
         dataset=dataset,
