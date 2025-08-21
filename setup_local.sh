@@ -1,0 +1,1 @@
+uv sync && uv sync --all-extras

@@ -1,0 +1,13 @@
+[project]
+name = "vf-celeste-0000"
+version = "0.1.0"
+dependencies = [
+    "verifiers>=0.1.2.post0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["vf_celeste_0000.py"]
