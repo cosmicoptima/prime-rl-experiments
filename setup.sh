@@ -9,3 +9,5 @@ uv sync && uv sync --all-extras
 ln -sf /workspace/.local ~/.local
 # Add uv to PATH
 export PATH="/workspace/.local/bin:$PATH"
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3
