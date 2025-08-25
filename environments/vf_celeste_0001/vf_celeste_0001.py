@@ -32,6 +32,7 @@ class UserDiffParser(vf.Parser):
 
 
 def render_question(thread: dict) -> str:
+    print(thread.keys()) #debug
     title = thread["title"]
     body = thread["body"]
     comments = "\n".join([f"    <comment><n>{i+1}</n><user>???</user><text>{c['comment']}</text></comment>" for i, c in enumerate(thread["comments"])])
