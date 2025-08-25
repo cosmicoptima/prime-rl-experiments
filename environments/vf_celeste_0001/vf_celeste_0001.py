@@ -58,7 +58,7 @@ User 2: 2, 5
 def calculate_answer(thread: dict) -> str:
     comments = thread["comments"]
     usernames = list(set([c["username"] for c in comments]))
-    return [[i for i, c in enumerate(comments) if c["username"] == u] for u in usernames]
+    return json.dumps([[i for i, c in enumerate(comments) if c["username"] == u] for u in usernames])
 
 
 def load_environment(**kwargs) -> vf.Environment:
@@ -71,6 +71,7 @@ def load_environment(**kwargs) -> vf.Environment:
     def reward(completion, answer, **kwargs):
         # Extract the assistant's response from the message list
         text = " ".join(m.get("content", "") for m in completion if m.get("role") == "assistant")
+        answer = json.loads(answer)
         
         # Parse the completion to get predicted groups
         predicted_groups_str = parser.parse_answer(text)
