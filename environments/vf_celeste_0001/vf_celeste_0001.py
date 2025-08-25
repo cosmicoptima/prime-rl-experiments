@@ -22,8 +22,9 @@ class UserDiffParser(vf.Parser):
         return json.dumps(groups) # i think parse_answer has to return a string
     
     def get_format_reward_func(self):
-        def reward_func(prompt, response, answer, state):
-            processed_answer = json.loads(self.parse_answer(response))
+        def reward_func(completion, **kwargs):
+            text = " ".join(m.get("content", "") for m in completion if m.get("role") == "assistant")
+            processed_answer = json.loads(self.parse_answer(text))
             print(processed_answer)
             if len(processed_answer) == 0:
                 return 0.0
