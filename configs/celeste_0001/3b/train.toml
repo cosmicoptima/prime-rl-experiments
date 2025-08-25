@@ -1,0 +1,14 @@
+max_steps = 500
+
+[monitor.wandb]
+project = "celeste-0001"
+
+[model]
+name = "Qwen/Qwen2.5-3B-Instruct"
+attn = "sdpa"
+
+[optim]
+lr = 1e-6
+
+[ckpt]
+interval = 100

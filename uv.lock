@@ -1,6 +1,6 @@
 version = 1
-revision = 2
-requires-python = ">=3.12.0, <3.13"
+revision = 3
+requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'linux'",
     "sys_platform != 'linux'",
@@ -14,6 +14,7 @@ members = [
     "prime-rl",
     "vf-alphabet-sort",
     "vf-ascii-tree",
+    "vf-celeste-0000",
     "vf-hendrycks-math",
     "vf-intellect-math",
     "vf-pydantic-adherence",
@@ -2045,6 +2046,7 @@ flash-infer = [
 vf = [
     { name = "vf-alphabet-sort" },
     { name = "vf-ascii-tree" },
+    { name = "vf-celeste-0000" },
     { name = "vf-hendrycks-math" },
     { name = "vf-intellect-math" },
     { name = "vf-pydantic-adherence" },
@@ -2094,6 +2096,7 @@ requires-dist = [
     { name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" },
     { name = "vf-alphabet-sort", marker = "extra == 'vf'", editable = "environments/vf_alphabet_sort" },
     { name = "vf-ascii-tree", marker = "extra == 'vf'", editable = "environments/vf_ascii_tree" },
+    { name = "vf-celeste-0000", marker = "extra == 'vf'", editable = "environments/vf_celeste_0000" },
     { name = "vf-hendrycks-math", marker = "extra == 'vf'", editable = "environments/vf_hendrycks_math" },
     { name = "vf-intellect-math", marker = "extra == 'vf'", editable = "environments/vf_intellect_math" },
     { name = "vf-pydantic-adherence", marker = "extra == 'vf'", editable = "environments/vf_pydantic_adherence" },
@@ -3295,6 +3298,17 @@ requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifi
 name = "vf-ascii-tree"
 version = "0.1.4"
 source = { editable = "environments/vf_ascii_tree" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", git = "https://github.com/willccbb/verifiers?rev=74c604f" }]
+
+[[package]]
+name = "vf-celeste-0000"
+version = "0.1.0"
+source = { editable = "environments/vf_celeste_0000" }
 dependencies = [
     { name = "verifiers" },
 ]
