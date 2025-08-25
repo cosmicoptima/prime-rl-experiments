@@ -34,7 +34,8 @@ class UserDiffParser(vf.Parser):
 def render_question(thread: dict) -> str:
     title = thread["title"]
     body = thread["body"]
-    comments = "\n".join([f"    <comment><n>{i+1}</n><user>???</user><text>{c['comment']}</text></comment>" for i, c in enumerate(thread["comments"])])
+    comments = comments.replace("\n", "\n        ")
+    comments = "\n".join([f"    <comment>\n      <n>{i+1}</n><user>???</user>\n      <text>\n        {c['comment']}\n      </text>\n    </comment>" for i, c in enumerate(thread["comments"])])
 
     return f"""<context>
   <submission>
