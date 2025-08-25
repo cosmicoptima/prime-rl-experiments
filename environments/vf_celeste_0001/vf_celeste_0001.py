@@ -24,6 +24,7 @@ class UserDiffParser(vf.Parser):
     def get_format_reward_func(self):
         def reward_func(prompt, response, answer, state):
             processed_answer = json.loads(self.parse_answer(response))
+            print(processed_answer)
             if len(processed_answer) == 0:
                 return 0.0
             return 1.0
