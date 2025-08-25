@@ -32,7 +32,6 @@ class UserDiffParser(vf.Parser):
 
 
 def render_question(thread: dict) -> str:
-    print(thread.keys()) #debug
     title = thread["title"]
     body = thread["body"]
     comments = "\n".join([f"    <comment><n>{i+1}</n><user>???</user><text>{c['comment']}</text></comment>" for i, c in enumerate(thread["comments"])])
@@ -64,6 +63,7 @@ def calculate_answer(thread: dict) -> str:
 
 def load_environment(**kwargs) -> vf.Environment:
     dataset = load_dataset("cosmicoptima/IFhXR5QAHNW9", split="train")
+    dataset = dataset.filter(lambda x: all(k in x for k in ["title", "body", "comments"]))
     dataset = dataset.map(lambda x: {"question": render_question(x), "answer": calculate_answer(x), "task": "reddit_user_differentiation"})
 
     parser = UserDiffParser()
