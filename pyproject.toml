@@ -61,6 +61,7 @@ vf = [
     "vf-unscramble",
     "vf-alphabet-sort",
     "vf-celeste-0000",
+    "vf-celeste-0001",
 ]
 
 [tool.uv]
@@ -81,6 +82,7 @@ vf-skywork-math = { workspace = true }
 vf-unscramble = { workspace = true }
 vf-alphabet-sort = { workspace = true }
 vf-celeste-0000 = { workspace = true }
+vf-celeste-0001 = { workspace = true }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -98,6 +100,7 @@ members = [
     "environments/vf_unscramble",
     "environments/vf_alphabet_sort",
     "environments/vf_celeste_0000",
+    "environments/vf_celeste_0001",
 ]
 
 [dependency-groups]
