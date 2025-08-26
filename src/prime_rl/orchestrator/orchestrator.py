@@ -198,7 +198,7 @@ async def orchestrate(config: OrchestratorConfig):
             sampling_args = dict(config.sampling)
             sampling_args["top_p"] = 1.0
             sampling_args["logprobs"] = True
-            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True, "top_k": -1, "min_p": 0.0}
+            sampling_args["extra_body"] = {"return_tokens_as_token_ids": True, "top_k": -1, "min_p": 0.0, "repetition_penalty": 1.0}
             sampling_args["extra_body"]["min_tokens"] = sampling_args.pop("min_tokens")
 
             # Generate completions + rewards with verifiers
