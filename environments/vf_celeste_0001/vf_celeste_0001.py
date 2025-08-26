@@ -177,8 +177,8 @@ def load_environment(**kwargs) -> vf.Environment:
         return reward
     
     rubric = vf.Rubric(
-        funcs=[reward, parser.get_format_reward_func()],
-        weights=[0.83, 0.17],
+        funcs=[reward],
+        weights=[1.0],
     )
 
     return vf.SingleTurnEnv(
