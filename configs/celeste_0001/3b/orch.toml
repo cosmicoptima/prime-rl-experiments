@@ -20,7 +20,7 @@ interval = 2
 id = "vf-celeste-0001"
 
 [sampling]
-max_tokens = 512
+max_tokens = 832
 
 [ckpt]
 interval = 100
