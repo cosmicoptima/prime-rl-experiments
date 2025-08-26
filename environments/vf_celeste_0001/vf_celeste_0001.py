@@ -90,7 +90,7 @@ def load_environment(**kwargs) -> vf.Environment:
     dataset = dataset.map(lambda x: {"question": render_question(x), "answer": calculate_answer(x), "task": "reddit_user_differentiation"})
     
     # Filter out examples that are too long
-    MAX_PROMPT_TOKENS = 3264
+    MAX_PROMPT_TOKENS = 3100 # 3264 ... - 128 because 3264 still errored at one point
     
     print("Filtering dataset by token count...")
     original_size = len(dataset)
@@ -138,10 +138,41 @@ def load_environment(**kwargs) -> vf.Environment:
         for group in answer:
             all_actual_comments.extend(group)
         
-        reward = 0.0
-        for group in answer:
-            if group in predicted_groups:
-                reward += len(group) / len(all_actual_comments)
+        # Original exact-match reward calculation (commented out)
+        # reward = 0.0
+        # for group in answer:
+        #     if group in predicted_groups:
+        #         reward += len(group) / len(all_actual_comments)
+        
+        # F1 weighted group score with power=4 and comment normalization
+        total_comments = sum(len(group) for group in answer)
+        weighted_score = 0.0
+        
+        for actual_group in answer:
+            # Calculate this group's weight based on comment share
+            weight = len(actual_group) / total_comments
+            actual_set = set(actual_group)
+            
+            # Find best F1 score against all predicted groups
+            best_f1 = 0.0
+            for pred_group in predicted_groups:
+                pred_set = set(pred_group)
+                intersection = actual_set & pred_set
+                
+                # Calculate precision and recall
+                precision = len(intersection) / len(actual_group) if len(actual_group) > 0 else 0.0
+                recall = len(intersection) / len(pred_group) if len(pred_group) > 0 else 0.0
+                
+                # Calculate F1 score
+                if precision + recall > 0:
+                    f1 = 2 * precision * recall / (precision + recall)
+                    best_f1 = max(best_f1, f1)
+            
+            # Add weighted contribution
+            weighted_score += weight * best_f1
+        
+        # Apply power scaling
+        reward = weighted_score ** 4
         
         return reward
     
