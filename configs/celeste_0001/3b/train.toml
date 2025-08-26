@@ -7,8 +7,13 @@ project = "celeste-0001"
 name = "Qwen/Qwen2.5-3B-Instruct"
 attn = "sdpa"
 
+[model.ac]
+freq = 1
+
 [optim]
 lr = 1e-6
+max_norm = 0.01
+weight_decay = 0.001
 
 [ckpt]
 interval = 100

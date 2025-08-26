@@ -1,6 +1,6 @@
 max_steps = 500
 batch_size = 1024
-micro_batch_size = 1
+micro_batch_size = 2
 seq_len = 4096
 rollouts_per_prompt = 16
 mask_truncated_completions = false
@@ -20,7 +20,7 @@ interval = 2
 id = "vf-celeste-0001"
 
 [sampling]
-max_tokens = 512
+max_tokens = 768
 
 [ckpt]
 interval = 100
