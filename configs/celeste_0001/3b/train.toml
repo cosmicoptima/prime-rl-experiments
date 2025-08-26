@@ -5,7 +5,6 @@ project = "celeste-0001"
 
 [model]
 name = "Qwen/Qwen2.5-3B-Instruct"
-attn = "sdpa"
 
 [model.ac]
 freq = 1
