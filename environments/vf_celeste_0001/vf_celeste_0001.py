@@ -3,6 +3,28 @@ import json
 import re
 from sklearn.metrics import normalized_mutual_info_score
 import verifiers as vf
+from transformers import AutoTokenizer
+import os
+
+
+# Global tokenizer instance to avoid reloading
+_tokenizer = None
+
+
+def get_tokenizer():
+    """Get or create the tokenizer instance"""
+    global _tokenizer
+    if _tokenizer is None:
+        # Use the same model as specified in the config files
+        model_name = "Qwen/Qwen2.5-3B-Instruct"
+        _tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    return _tokenizer
+
+
+def count_tokens(text):
+    """Count the number of tokens in a text string"""
+    tokenizer = get_tokenizer()
+    return len(tokenizer.encode(str(text)))
 
 
 class UserDiffParser(vf.Parser):
@@ -68,6 +90,25 @@ def load_environment(**kwargs) -> vf.Environment:
     dataset = load_dataset("cosmicoptima/IFhXR5QAHNW9", split="train")
     dataset = dataset.filter(lambda x: all(k in x for k in ["title", "body", "comments"]))
     dataset = dataset.map(lambda x: {"question": render_question(x), "answer": calculate_answer(x), "task": "reddit_user_differentiation"})
+    
+    # Filter out examples that are too long
+    # Maximum tokens for prompt is 3584 (4096 total - 512 for completion)
+    MAX_PROMPT_TOKENS = 3584
+    
+    print("Filtering dataset by token count...")
+    original_size = len(dataset)
+    
+    # Add token count to each example
+    dataset = dataset.map(lambda x: {"token_count": count_tokens(x["question"])})
+    
+    # Filter to keep only examples under the token limit
+    dataset = dataset.filter(lambda x: x["token_count"] <= MAX_PROMPT_TOKENS)
+    
+    filtered_size = len(dataset)
+    print(f"Filtered dataset from {original_size} to {filtered_size} examples (removed {original_size - filtered_size} examples exceeding {MAX_PROMPT_TOKENS} tokens)")
+    
+    # Remove the temporary token_count field
+    dataset = dataset.remove_columns(["token_count"])
 
     parser = UserDiffParser()
 
