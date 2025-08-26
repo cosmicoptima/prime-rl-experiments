@@ -92,8 +92,7 @@ def load_environment(**kwargs) -> vf.Environment:
     dataset = dataset.map(lambda x: {"question": render_question(x), "answer": calculate_answer(x), "task": "reddit_user_differentiation"})
     
     # Filter out examples that are too long
-    # Maximum tokens for prompt is 3584 (4096 total - 512 for completion)
-    MAX_PROMPT_TOKENS = 3584
+    MAX_PROMPT_TOKENS = 3328
     
     print("Filtering dataset by token count...")
     original_size = len(dataset)
@@ -124,6 +123,29 @@ def load_environment(**kwargs) -> vf.Environment:
         # If no valid groups were parsed, return 0
         if not predicted_groups:
             return 0.0
+        
+        # Get all actual comment indices
+        actual_indices = set()
+        for group in answer:
+            actual_indices.update(group)
+        
+        # Get all predicted comment indices  
+        predicted_indices = set()
+        for group in predicted_groups:
+            predicted_indices.update(group)
+        
+        # Validation checks:
+        # 1. Check that all actual comments are classified (no missing comments)
+        # 2. Check that no extra/out-of-bounds comments are included
+        if actual_indices != predicted_indices:
+            return 0.0  # Missing or extra comments
+        
+        # 3. Check for duplicate assignments (comment in multiple groups)
+        all_predicted_comments = []
+        for group in predicted_groups:
+            all_predicted_comments.extend(group)
+        if len(all_predicted_comments) != len(set(all_predicted_comments)):
+            return 0.0  # Duplicate assignment found
         
         # Convert actual groups (answer) and predicted groups to cluster labels
         # First, determine the total number of comments
