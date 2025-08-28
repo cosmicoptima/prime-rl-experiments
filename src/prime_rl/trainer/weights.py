@@ -1,29 +1,197 @@
 import shutil
 import threading
 import time
+import warnings
 from pathlib import Path
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import CheckpointConfig
-from prime_rl.trainer.model import Model
 from prime_rl.trainer.rl.config import WeightCheckpointConfig
+from prime_rl.trainer.lora import LoRALinear, get_lora_state_dict, load_lora_state_dict
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
+
+
+def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
+    return any("mlp.router.gate" in i for i in state_dict.keys())
+
+
+def _has_lora_layers(model: nn.Module) -> bool:
+    """Check if model has LoRA layers."""
+    for module in model.modules():
+        if isinstance(module, LoRALinear):
+            return True
+    return False
+
+
+def _get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
+    return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
+
+
+def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
+    num_layers = _get_max_layer_num(state_dict)
+    for i in range(num_layers):
+        if not f"model.layers.{i}.mlp.router.gate.weight" in state_dict:
+            continue  # Not a TT-MoE layer
+
+        # Load balancing terms
+        if f"model.layers.{i}.mlp.expert_bias" in state_dict:
+            state_dict[f"model.layers.{i}.mlp.gate.e_score_correction_bias"] = state_dict[
+                f"model.layers.{i}.mlp.expert_bias"
+            ]
+            del state_dict[f"model.layers.{i}.mlp.expert_bias"]
+        if f"model.layers.{i}.mlp.tokens_per_expert" in state_dict:
+            del state_dict[f"model.layers.{i}.mlp.tokens_per_expert"]
+
+        # Shared experts
+        if f"model.layers.{i}.mlp.shared_expert.w1" in state_dict:
+            state_dict[f"model.layers.{i}.mlp.shared_experts.gate_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_expert.w1"
+            ][0]
+            state_dict[f"model.layers.{i}.mlp.shared_experts.down_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_expert.w2"
+            ][0]
+            state_dict[f"model.layers.{i}.mlp.shared_experts.up_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.shared_expert.w3"
+            ][0]
+            del state_dict[f"model.layers.{i}.mlp.shared_expert.w1"]
+            del state_dict[f"model.layers.{i}.mlp.shared_expert.w2"]
+            del state_dict[f"model.layers.{i}.mlp.shared_expert.w3"]
+
+        # Gate / Router
+        state_dict[f"model.layers.{i}.mlp.gate.weight"] = state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
+        del state_dict[f"model.layers.{i}.mlp.router.gate.weight"]
+
+        # Routed experts
+        num_experts, moe_dim, dim = state_dict[f"model.layers.{i}.mlp.experts.w1"].shape
+        for j in range(num_experts):
+            state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.experts.w1"
+            ][j]
+            state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.experts.w2"
+            ][j]
+            state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"] = state_dict[
+                f"model.layers.{i}.mlp.experts.w3"
+            ][j]
+        del state_dict[f"model.layers.{i}.mlp.experts.w1"]
+        del state_dict[f"model.layers.{i}.mlp.experts.w2"]
+        del state_dict[f"model.layers.{i}.mlp.experts.w3"]
+
+
+def _clean_lora_state_dict(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    """Remove LoRA parameters and fix LoRA base layer key names for HF compatibility."""
+    clean_state_dict = {}
+    lora_params_removed = 0
+    base_layer_keys_renamed = 0
+    
+    print(f"[CHECKPOINT DEBUG] Processing {len(state_dict)} keys from state dict")
+    
+    for key, value in state_dict.items():
+        # Skip LoRA parameters completely
+        if 'lora_A' in key or 'lora_B' in key:
+            lora_params_removed += 1
+            print(f"[CHECKPOINT DEBUG] Removing LoRA parameter: {key}")
+            continue
+        
+        # Fix keys from LoRA base layers: remove .base_layer from path
+        if '.base_layer.' in key:
+            new_key = key.replace('.base_layer.', '.')
+            clean_state_dict[new_key] = value
+            base_layer_keys_renamed += 1
+            print(f"[CHECKPOINT DEBUG] Renamed key: {key} -> {new_key}")
+        else:
+            clean_state_dict[key] = value
+    
+    print(f"[CHECKPOINT DEBUG] Cleanup complete: removed {lora_params_removed} LoRA params, renamed {base_layer_keys_renamed} base layer keys")
+    print(f"[CHECKPOINT DEBUG] Final state dict has {len(clean_state_dict)} keys")
+    
+    # Print a sample of the final keys for verification
+    sample_keys = list(clean_state_dict.keys())[:5]
+    print(f"[CHECKPOINT DEBUG] Sample final keys: {sample_keys}")
+    
+    return clean_state_dict
+
+
+def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.Tensor]]:
+    """
+    Merge LoRA weights into base layers in-place and return original LoRA state for restoration.
+    
+    Returns:
+        Dictionary mapping module names to their original LoRA state
+    """
+    original_lora_state = {}
+    merged_count = 0
+    
+    print("[CHECKPOINT DEBUG] Starting LoRA weight merging")
+    
+    for name, module in model.named_modules():
+        if isinstance(module, LoRALinear):
+            print(f"[CHECKPOINT DEBUG] Merging LoRA module: {name}")
+            
+            # Store original LoRA state
+            original_lora_state[name] = {
+                'lora_A': module.lora_A.data.clone(),
+                'lora_B': module.lora_B.data.clone(),
+            }
+            
+            # Compute LoRA update: ΔW = B @ A * scaling
+            delta_weight = (module.lora_B @ module.lora_A) * module.scaling
+            delta_norm = delta_weight.norm().item()
+            print(f"[CHECKPOINT DEBUG] LoRA delta norm for {name}: {delta_norm:.6f}")
+            
+            # Merge into base layer
+            module.base_layer.weight.data.add_(delta_weight)
+            
+            # Zero out LoRA parameters to avoid double-counting
+            module.lora_A.data.zero_()
+            module.lora_B.data.zero_()
+            merged_count += 1
+    
+    print(f"[CHECKPOINT DEBUG] Merged {merged_count} LoRA modules")
+    return original_lora_state
+
+
+def _restore_lora_weights_inplace(model: nn.Module, original_lora_state: dict[str, dict[str, torch.Tensor]]) -> None:
+    """
+    Restore original LoRA weights and subtract merged weights from base layers.
+    
+    Args:
+        model: Model with merged LoRA weights
+        original_lora_state: Original LoRA state from _merge_lora_weights_inplace
+    """
+    restored_count = 0
+    print("[CHECKPOINT DEBUG] Starting LoRA weight restoration")
+    
+    for name, module in model.named_modules():
+        if isinstance(module, LoRALinear) and name in original_lora_state:
+            print(f"[CHECKPOINT DEBUG] Restoring LoRA module: {name}")
+            
+            # Restore original LoRA parameters
+            module.lora_A.data.copy_(original_lora_state[name]['lora_A'])
+            module.lora_B.data.copy_(original_lora_state[name]['lora_B'])
+            
+            # Subtract the merged LoRA update from base layer
+            delta_weight = (module.lora_B @ module.lora_A) * module.scaling
+            module.base_layer.weight.data.sub_(delta_weight)
+            restored_count += 1
+    
+    print(f"[CHECKPOINT DEBUG] Restored {restored_count} LoRA modules")
 
 
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
     def __init__(
-        self, outputs_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig | None, async_level: int
+        self, output_dir: Path, config: WeightCheckpointConfig, ckpt_config: CheckpointConfig | None, async_level: int
     ):
-        self.weights_dir = get_weights_dir(outputs_dir)
+        self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.ckpt_config = ckpt_config
         self.async_level = async_level
@@ -37,62 +205,123 @@ class WeightCheckpointManager:
     def _get_step_path(self, step: int) -> Path:
         return get_step_path(self.weights_dir, step)
 
-    def _gather_weights(self, model: Model, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+    def _gather_weights(self, model: nn.Module, dtype: torch.dtype = torch.bfloat16, merge_lora: bool = False) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""
         start_time = time.time()
         self._logger.debug("Gathering sharded weights")
+        
+        print(f"[CHECKPOINT DEBUG] Starting weight gathering, merge_lora={merge_lora}")
 
-        cpu_state = {}
-        for key, value in model.state_dict().items():
-            if isinstance(value, DTensor):
-                value = value.to(dtype)
-                # only gather after the downcast to dtype as it will be faster
-                value = value.full_tensor()
+        # Handle LoRA merging if requested and model has LoRA layers
+        original_lora_state = None
+        if merge_lora and _has_lora_layers(model):
+            print("[CHECKPOINT DEBUG] Model has LoRA layers, performing temporary merge")
+            self._logger.debug("Temporarily merging LoRA weights for checkpoint")
+            original_lora_state = _merge_lora_weights_inplace(model)
+        else:
+            print("[CHECKPOINT DEBUG] No LoRA merging needed")
 
-            if self._is_master:
-                key = get_fqns(model, key)
-                assert len(key) == 1
-                key = next(iter(key))
-                # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
-                cpu_state[key] = value.to("cpu", non_blocking=False)
+        try:
+            # Suppress torch.distributed warnings during checkpoint saving
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+                warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        torch.distributed.barrier()
+                cpu_state = {}
+                for key, value in model.state_dict().items():
+                    if isinstance(value, DTensor):
+                        value = value.to(dtype)
+                        # only gather after the downcast to dtype as it will be faster
+                        value = value.full_tensor()
+
+                    if self._is_master:
+                        key = get_fqns(model, key)
+                        assert len(key) == 1
+                        key = next(iter(key))
+                        # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
+                        cpu_state[key] = value.to("cpu", non_blocking=False)
+
+                torch.distributed.barrier()
+
+        finally:
+            # Always restore original LoRA state, even if gathering fails
+            if original_lora_state is not None:
+                print("[CHECKPOINT DEBUG] Restoring original LoRA state")
+                self._logger.debug("Restoring original LoRA weights")
+                _restore_lora_weights_inplace(model, original_lora_state)
+
+        # Always clean up the state dict for HF compatibility
+        print(f"[CHECKPOINT DEBUG] Raw state dict has {len(cpu_state)} keys")
+        if any('.base_layer.' in key or 'lora_A' in key or 'lora_B' in key for key in cpu_state.keys()):
+            print("[CHECKPOINT DEBUG] Cleaning LoRA artifacts from state dict")
+            self._logger.debug("Cleaning LoRA artifacts from checkpoint state dict")
+            cpu_state = _clean_lora_state_dict(cpu_state)
+        else:
+            print("[CHECKPOINT DEBUG] No LoRA artifacts found in state dict")
+
         self._logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
+        print(f"[CHECKPOINT DEBUG] Weight gathering complete in {time.time() - start_time:.2f}s")
 
         return cpu_state
 
-    def _save_to_path(self, cpu_state: dict[str, Tensor], model: Model, tokenizer: PreTrainedTokenizer, step: int):
+    def _save_to_path(self, cpu_state: dict[str, Tensor], model: nn.Module, tokenizer: PreTrainedTokenizer, step: int):
         """Save weight checkpoint for given step."""
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
 
+        print(f"[CHECKPOINT DEBUG] Saving checkpoint to {step_path}")
         self._logger.debug(f"Saving weight checkpoint to {step_path}")
         start_time = time.time()
 
-        # Save model weights to temporary file to avoid race condition
-        model_path = self._get_model_path(step)
-        tmp_model_path = model_path.with_suffix(".tmp")
-        torch.save(cpu_state, tmp_model_path)
-        # Rename temporary file to indicate checkpoint is complete
-        tmp_model_path.rename(model_path)
+        # Suppress torch.distributed warnings during checkpoint saving
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+            warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        # Save model config, generation arguments and tokenizer
-        model.config.save_pretrained(step_path)
-        if model.generation_config:
-            model.generation_config.save_pretrained(step_path)
-        tokenizer.save_pretrained(step_path)
+            # Save model weights to temporary file to avoid race condition
+            model_path = self._get_model_path(step)
+            tmp_model_path = model_path.with_suffix(".tmp")
+            print(f"[CHECKPOINT DEBUG] Saving {len(cpu_state)} parameters to {model_path}")
+            torch.save(cpu_state, tmp_model_path)
+            # Rename temporary file to indicate checkpoint is complete
+            tmp_model_path.rename(model_path)
+
+            # Save model config, generation arguments and tokenizer
+            model.config.save_pretrained(step_path)
+            if model.generation_config:
+                model.generation_config.save_pretrained(step_path)
+            tokenizer.save_pretrained(step_path)
 
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
+        print(f"[CHECKPOINT DEBUG] Checkpoint saved successfully in {time.time() - start_time:.2f}s")
 
     def save(
         self,
-        model: Model,
+        model: nn.Module,
         tokenizer: PreTrainedTokenizer,
         step: int,
         dtype: torch.dtype = torch.bfloat16,
+        merge_lora: bool = None,
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
-        cpu_state = self._gather_weights(model, dtype)
+        # Determine whether to merge LoRA weights
+        if merge_lora is None:
+            # Check if model has LoRA config and merge_on_save is enabled
+            merge_lora = (
+                hasattr(model, 'config') and 
+                hasattr(model.config, 'lora') and 
+                model.config.lora is not None and
+                model.config.lora.merge_on_save
+            )
+            # Fallback: if model has LoRA layers, merge by default
+            if not merge_lora:
+                merge_lora = _has_lora_layers(model)
+        
+        print(f"[CHECKPOINT DEBUG] Starting checkpoint save for step {step}, merge_lora={merge_lora}")
+
+        cpu_state = self._gather_weights(model, dtype, merge_lora)
+        if _has_tt_moe_layers(cpu_state):
+            _convert_tt_moe_to_hf_(cpu_state)
 
         if self._is_master:
             if self.config.save_async:
@@ -144,9 +373,9 @@ class WeightCheckpointManager:
 
 
 def setup_weight_ckpt_manager(
-    outputs_dir: Path,
+    output_dir: Path,
     weight_ckpt_config: WeightCheckpointConfig,
     ckpt_config: CheckpointConfig | None,
     async_level: int,
 ) -> WeightCheckpointManager:
-    return WeightCheckpointManager(outputs_dir, weight_ckpt_config, ckpt_config, async_level=async_level)
+    return WeightCheckpointManager(output_dir, weight_ckpt_config, ckpt_config, async_level=async_level)

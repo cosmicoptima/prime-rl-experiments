@@ -1,6 +1,7 @@
-from typing import TypeAlias
+import logging
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from beartype import beartype as typechecker
 from jaxtyping import Float, Int, jaxtyped
@@ -11,33 +12,74 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
-    LlamaForCausalLM,
-    Qwen2ForCausalLM,
-    Qwen3ForCausalLM,
 )
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.config import ActivationCheckpointConfig, ModelConfig
+from prime_rl.trainer.lora import apply_lora_to_model
+from prime_rl.utils.logger import get_logger
 
-Model: TypeAlias = LlamaForCausalLM | Qwen2ForCausalLM | Qwen3ForCausalLM
+# Add filter to the standard logging module for transformers.modeling_utils to supress the
+# flash attention dtype warnings since FSDP is used to handle mixed precision.
+transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
+transformers_modeling_utils_logger.addFilter(
+    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
+)
 
 
-def get_model(config: ModelConfig) -> Model:
-    config_model = AutoConfig.from_pretrained(config.name, attn_implementation=config.attn)
+def is_tt_moe_model(model: nn.Module) -> bool:
+    return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
+
+
+def get_load_balance_stats(model: nn.Module, reset_stats: bool = True) -> dict[str, torch.FloatTensor]:
+    per_layer_max_vio = []
+    for transformer_block in model.model.layers:
+        # This is necessary for models that have mixed dense layers
+        if not hasattr(transformer_block.mlp, "tokens_per_expert"):
+            continue
+        tokens_per_expert = transformer_block.mlp.tokens_per_expert
+        balanced_load = tokens_per_expert.mean()
+        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
+        per_layer_max_vio.append(max_vio.item())
+        if reset_stats:
+            tokens_per_expert.zero_()
+    if len(per_layer_max_vio) == 0:
+        get_logger().warning("No load balance stats to report")
+        return {}
+    return {"max_vio": torch.tensor(per_layer_max_vio)}
+
+
+def get_model(config: ModelConfig) -> nn.Module:
+    config_model = AutoConfig.from_pretrained(
+        config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
+    )
     config_model.use_cache = False
-    model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=config.name, config=config_model)
+    model = AutoModelForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=config.name,
+        config=config_model,
+        trust_remote_code=config.trust_remote_code,
+    )
+
     return model
 
 
 def setup_tokenizer(config: ModelConfig) -> PreTrainedTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(config.name)
+    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     return tokenizer
 
 
-def setup_fsdp(model: Model, config: ModelConfig):
+def setup_fsdp(model: nn.Module, config: ModelConfig):
+    assert dist.get_world_size() % config.ep == 0, "World size must be divisible by EP"
+    fsdp_dim = dist.get_world_size() // config.ep
+    world_mesh = dist.init_device_mesh("cuda", (fsdp_dim, config.ep), mesh_dim_names=("fsdp", "ep"))
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-
+    # TODO: Lets not support EP for now.
+    # (1) Im not sure how the hsdp mesh is supposed to work with EP.
+    # (2) The EP implementation seems to have changes every week in TT and is unstable at the moment
+    # (3) There doesnt seem to be significant MFU gains from EP in my benchmarks
+    assert config.ep == 1, "EP is not supported for now"
+    hsdp_mesh = world_mesh["fsdp"]
     for layer_id, transformer_block in enumerate(model.model.layers):
         if config.reshard_after_forward:
             layer_reshard_after_forward = layer_id < len(model.model.layers) - 1
@@ -45,10 +87,12 @@ def setup_fsdp(model: Model, config: ModelConfig):
             layer_reshard_after_forward = False
         fully_shard(
             transformer_block,
+            mesh=hsdp_mesh,
             mp_policy=mp_policy,
             reshard_after_forward=layer_reshard_after_forward,
         )
-    fully_shard(model, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
+
+    fully_shard(model, mesh=hsdp_mesh, mp_policy=mp_policy, reshard_after_forward=config.reshard_after_forward)
 
 
 def reshard_module(model: nn.Module):
@@ -57,7 +101,7 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
-def apply_ac(model: Model, ac_config: ActivationCheckpointConfig):
+def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     for layer_id, (layer_name, transformer_block) in enumerate(model.model.layers.named_children()):
         if layer_id % ac_config.freq == 0:
             transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
@@ -66,6 +110,11 @@ def apply_ac(model: Model, ac_config: ActivationCheckpointConfig):
 
 def setup_model(config: ModelConfig) -> nn.Module:
     model = get_model(config)
+    
+    # Apply LoRA before FSDP setup
+    if config.lora is not None and config.lora.enabled:
+        apply_lora_to_model(model, config.lora)
+    
     setup_fsdp(model, config)
     if config.ac is not None:
         apply_ac(model, config.ac)

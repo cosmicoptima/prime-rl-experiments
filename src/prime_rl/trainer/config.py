@@ -1,10 +1,15 @@
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from prime_rl.utils.pydantic_config import BaseConfig
 
 AttnImplementation: TypeAlias = Literal["sdpa", "flash_attention_2"]
+
+MOE_MODEL_MAPS = {
+    "Qwen/Qwen3-30B-A3B": "Jackmin108/Qwen3-30B-A3B-Fast",
+    "moonshotai/Moonlight-16B-A3B-Instruct": "Jackmin108/Moonlight-16B-A3B-Instruct-Fast",
+}
 
 
 class ActivationCheckpointConfig(BaseModel):
@@ -17,6 +22,48 @@ class ActivationCheckpointConfig(BaseModel):
             description="Applies activation checkpointing to every `freq` layers. Defaults to 1, which will is full activation checkpointing.",
         ),
     ] = 1
+
+
+class LoRAConfig(BaseModel):
+    """Configuration for LoRA (Low-Rank Adaptation)."""
+    
+    enabled: bool = False
+    rank: Annotated[int, Field(ge=1, description="Rank of the low-rank decomposition")] = 16
+    alpha: Annotated[float, Field(ge=0, description="LoRA scaling parameter")] = 16.0
+    dropout: Annotated[float, Field(ge=0, le=1, description="LoRA dropout rate")] = 0.0
+    target_modules: Annotated[
+        list[str], 
+        Field(description="Regex patterns for modules to apply LoRA to")
+    ] = [
+        r".*\.q_proj$",
+        r".*\.k_proj$", 
+        r".*\.v_proj$",
+        r".*\.o_proj$",
+        r".*\.gate_proj$",
+        r".*\.up_proj$",
+        r".*\.down_proj$"
+    ]
+    trainable_modules: Annotated[
+        list[str], 
+        Field(description="Regex patterns for modules to keep fully trainable (not freeze)")
+    ] = [
+        r".*embed_tokens$",
+        r".*norm$",
+        r".*layernorm$",
+        r"lm_head$"
+    ]
+    merge_on_save: Annotated[
+        bool, 
+        Field(description="Whether to merge LoRA weights into base model when saving weight checkpoints")
+    ] = True
+
+    @model_validator(mode="after")
+    def validate_config(self):
+        if self.enabled and self.rank <= 0:
+            raise ValueError("LoRA rank must be positive when LoRA is enabled")
+        if self.enabled and not self.target_modules:
+            raise ValueError("Must specify target_modules when LoRA is enabled")
+        return self
 
 
 class ModelConfig(BaseConfig):
@@ -45,9 +92,35 @@ class ModelConfig(BaseConfig):
         ),
     ] = None
 
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(description="LoRA configuration. If None, LoRA will not be used.")
+    ] = None
+
     reshard_after_forward: Annotated[
         bool, Field(description="Whether to reshard the model after each forward pass.")
     ] = True
+
+    trust_remote_code: Annotated[
+        bool,
+        Field(
+            description="Whether to trust remote code for model and tokenizer initialization.",
+        ),
+    ] = False
+
+    ep: Annotated[
+        int,
+        Field(
+            description="The expert parallelism to use if the model has MoE layers. If 1, then no EP will be used.",
+        ),
+    ] = 1
+
+    @model_validator(mode="after")
+    def _map_model_name_for_moe(self):
+        """Map model name if it exists in MOE_MODEL_MAPS."""
+        if self.name in MOE_MODEL_MAPS:
+            self.name = MOE_MODEL_MAPS[self.name]
+        return self
 
 
 class ConstantSchedulerConfig(BaseModel):
@@ -94,7 +167,7 @@ SchedulerConfigType: TypeAlias = ConstantSchedulerConfig | LinearSchedulerConfig
 
 
 class BaseOptimizerConfig(BaseModel):
-    lr: Annotated[float, Field(ge=0)] = 4e-4
+    lr: Annotated[float, Field(ge=0)] = 1e-6
     weight_decay: Annotated[float, Field(ge=0)] = 0.01
     max_norm: Annotated[float, Field(ge=0, description="Maximum gradient norm to clip.")] = 1.0
 
@@ -133,13 +206,6 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    save_async: Annotated[
-        bool,
-        Field(
-            description="Whether to save the checkpoint asynchronously.",
-        ),
-    ] = False
-
     resume_step: Annotated[
         int | None,
         Field(
@@ -154,7 +220,7 @@ class CheckpointConfig(BaseConfig):
             ge=1,
             description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
         ),
-    ] = None
+    ] = 1
 
 
 class WeightCheckpointConfig(BaseConfig):
