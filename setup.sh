@@ -13,3 +13,8 @@ ln -sf /workspace/.local ~/.local
 export PATH="/workspace/.local/bin:$PATH"
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+git config --global credential.helper store
+
+uv run hf auth login
+uv run wandb login
