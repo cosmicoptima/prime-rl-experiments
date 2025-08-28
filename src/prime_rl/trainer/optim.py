@@ -2,6 +2,7 @@ from muon_fsdp2 import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
+from prime_rl.trainer.adam_4bit import Quantized4BitAdamW
 from prime_rl.trainer.config import OptimizerConfigType
 
 
@@ -17,6 +18,13 @@ def setup_optimizer(config: OptimizerConfigType, model: nn.Module) -> Optimizer:
             )
         case "adamw":
             return AdamW(
+                params=model.parameters(),
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+                betas=(config.betas1, config.betas2),
+            )
+        case "adamw_4bit":
+            return Quantized4BitAdamW(
                 params=model.parameters(),
                 lr=config.lr,
                 weight_decay=config.weight_decay,
