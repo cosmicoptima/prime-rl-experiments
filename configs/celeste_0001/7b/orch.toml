@@ -1,0 +1,26 @@
+max_steps = 500
+batch_size = 1024
+micro_batch_size = 4
+seq_len = 4096
+rollouts_per_prompt = 16
+mask_truncated_completions = false
+
+[model]
+name = "Qwen/Qwen2.5-7B-Instruct"
+
+[monitor.wandb]
+project = "celeste-0001"
+
+[monitor.wandb.log_extras]
+samples = true
+distributions = true
+interval = 2
+
+[environment]
+id = "vf-celeste-0001"
+
+[sampling]
+max_tokens = 832
+
+[ckpt]
+interval = 100
