@@ -7,6 +7,4 @@ name = "PrimeIntellect/Qwen3-0.6B"
 batch_size = 16
 micro_batch_size = 8
 seq_len = 128
-
-[data.fake]
-type = "fixed"
+fake = "fixed"

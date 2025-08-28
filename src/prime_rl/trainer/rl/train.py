@@ -3,9 +3,7 @@ from copy import deepcopy
 
 # Import environment before any other imports
 # ruff: noqa: I001
-from prime_rl.trainer import envs
 
-import shardcast
 import torch
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
@@ -15,10 +13,10 @@ from prime_rl.trainer.rl.config import RLTrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.trainer.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
-    compute_loss,
     shift_logits,
     selective_log_softmax,
     compute_entropy,
+    compute_loss,
 )
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -26,15 +24,19 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     reshard_module,
     setup_model,
+    is_tt_moe_model,
+    get_load_balance_stats,
 )
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     OffloadedTensor,
     Tensors,
     copy_model_to_cpu,
+    setup_torch_distributed,
     offload_model_to_cpu,
     wake_up_model_from_cpu,
     print_benchmark,
+    get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.monitor import setup_monitor
@@ -56,19 +58,11 @@ def train(config: RLTrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, outputs_dir=config.outputs_dir, run_config=config)
+    monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
 
-    # Set precision and cuda device
+    # Set precision
+    setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
-    torch.cuda.set_device(world.rank)
-
-    if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-        logger.info(f"Initializing shardcast from {envs.SHARDCAST_OUTPUT_DIR}")
-        shardcast.initialize(
-            envs.SHARDCAST_OUTPUT_DIR,
-            # +1 to ensure to not delete current checkpoint when async_level=0
-            max_distribution_folders=config.async_level + 1,
-        )
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -87,10 +81,10 @@ def train(config: RLTrainerConfig):
 
     # Get checkpoint managers
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, config.async_level)
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, config.async_level)
 
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -125,7 +119,7 @@ def train(config: RLTrainerConfig):
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
-    dataloader = DataLoader(config.outputs_dir, progress.step)
+    dataloader = DataLoader(config.output_dir, progress.step)
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake)
 
@@ -136,11 +130,11 @@ def train(config: RLTrainerConfig):
         save_weights_time = 0
         if progress.step > 0:
             save_weights_start_time = time.time()
-            model_path = weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+            weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_weights_time = time.time() - save_weights_start_time
 
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps
         save_ckpt_time = 0
         if (
             ckpt_manager is not None
@@ -234,11 +228,12 @@ def train(config: RLTrainerConfig):
         batch_size = micro_batch_size * num_micro_batches
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = torch.tensor(
-            sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches), device="cuda"
-        )
+        if config.loss.norm_type == "token":
+            loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+        elif config.loss.norm_type == "sequence":
+            loss_scale = batch_size
 
-        logger.info(f"Starting forward and backward pass ({num_micro_batches=}, {loss_scale.item()=})")
+        logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
@@ -256,19 +251,19 @@ def train(config: RLTrainerConfig):
             logprobs = selective_log_softmax(shifted_logits, input_ids)
 
             # Compute loss
+            response_lengths = get_response_lengths(position_ids)
             loss, loss_tensors = compute_loss(
-                logprobs=logprobs,
-                old_logprobs=old_logprobs,
-                advantages=advantages,
+                logprobs=logprobs.squeeze().split(response_lengths),
+                old_logprobs=old_logprobs.squeeze().split(response_lengths),
+                advantages=advantages.squeeze().split(response_lengths),
+                loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_config=config.loss,
+                loss_scale=loss_scale,
             )
 
             # Compute entropy
             with torch.no_grad():
                 entropy = compute_entropy(shifted_logits)
-
-            # Reduce the loss
-            loss = (loss * loss_mask).sum() / loss_scale
 
             # Delete logits and shifted_logits before backward pass to avoid memory spike
             del logits, shifted_logits
@@ -283,16 +278,23 @@ def train(config: RLTrainerConfig):
             tensors["recomputed_logprob_error"].append(
                 recomputed_logprob_errors[micro_step][loss_mask].detach().to("cpu")
             )
+            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+
+            if is_tt_moe_model(model):
+                load_balance_stats = get_load_balance_stats(model)
+                for k, v in load_balance_stats.items():
+                    tensors[k].append(v)
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach()[loss_mask].detach().to("cpu")
+                loss_tensor = loss_tensor.detach()[loss_mask.squeeze()].detach().to("cpu")
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            logger.debug(
-                f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
-            )
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f} | Importance Ratio: {tensors['importance_ratio'][-1].mean().item():.4f}"
+            if "max_vio" in tensors:
+                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.optim.max_norm}")
@@ -307,10 +309,7 @@ def train(config: RLTrainerConfig):
 
         forward_backward_time = time.time() - forward_backward_start_time
 
-        # Optionally, broadcast the weight checkpoint from master rank
-        if world.rank == 0 and envs.SHARDCAST_OUTPUT_DIR is not None:
-            logger.info(f"Broadcasting weights from {model_path} via shardcast")
-            shardcast.broadcast(model_path.as_posix())  # TODO: Is this blocking?
+        # TODO: Broadcast weight checkpoint via shardcast
 
         # Maybe clean up weight checkpoint
         weight_ckpt_manager.maybe_clean(progress.step)
@@ -342,6 +341,8 @@ def train(config: RLTrainerConfig):
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f} | Importance Ratio: {tensor_stats['importance_ratio/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        if "max_vio/mean" in tensor_stats:
+            step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics
@@ -398,12 +399,13 @@ def train(config: RLTrainerConfig):
     if ckpt_manager is not None:
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("RL trainer finished!")
 
     # Optionally, print benchmark table
-    if config.bench:
+    if config.bench and world.is_master:
         print_benchmark(to_col_format(monitor.history))
 
 

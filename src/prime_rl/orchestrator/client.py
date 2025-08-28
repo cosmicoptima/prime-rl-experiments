@@ -14,7 +14,7 @@ from prime_rl.utils.utils import get_weight_ckpt_model_path
 
 def setup_client(client_config: ClientConfig) -> AsyncOpenAI:
     # We use a longer request timeout than default, but if more than 20min, we probably need faster inference deployment
-    timeout = httpx.Timeout(timeout=1200, connect=5.0)
+    timeout = httpx.Timeout(timeout=client_config.timeout, connect=5.0)
     # We use as many concurrent connections as possible, but lower than available ports
     limits = httpx.Limits(
         max_connections=28000,  # OAI default: 1000
@@ -63,7 +63,7 @@ async def update_weights(client: AsyncOpenAI, path: Path, step: int) -> None:
     """Make a HTTP post request to the vLLM server to update the weights."""
     logger = get_logger()
     url = str(client.base_url)[:-4] + "/update_weights"
-    model_path = get_weight_ckpt_model_path(path, step)
+    model_path = get_weight_ckpt_model_path(path, step).absolute()
     logger.debug(f"Sending request to {url} to update weights from {model_path}")
     await client.post(url, cast_to=Response, body={"model_path": model_path.as_posix()})
 

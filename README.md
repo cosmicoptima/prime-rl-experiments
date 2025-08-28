@@ -28,6 +28,7 @@ curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scri
 <summary>
 Manual Installation
 </summary>
+<br>
 
 1. Clone the repository
 
@@ -56,6 +57,7 @@ uv sync && uv sync --all-extras
 <summary>
 Validate your environment setup
 </summary>
+<br>
 
 1. Check that environment uses Python 3.12
 
@@ -190,7 +192,96 @@ uv run rl \
 
 ### Multi-Node Training
 
-*TBD*
+The trainer and inference can be decoupled naively as they communicate via HTTP and shared file system. Simply spin up your inference server on one node, and your trainer on another node. Make sure that the orchestrator (colocated with the trainer) points to the public IP address of the node hosting the inference server and that they have access to a shared path used for outputs.
+
+If you want to go even bigger, you can run the trainer and/ or inference on multi-node.
+
+**Multi-Node Trainer**
+
+We rely on `torch.distributed` for multi-node trainer deployments ([docs](https://docs.pytorch.org/docs/stable/elastic/run.html)).
+
+The `torchrun` entrypoint can be used in multi-node distributed training. It will set up the correct number processes on each node and set up inter-node communication. 
+
+For this to work, you need to decide which node will be the master node. On this node, find the private IP with `ip a | grep 10.` or `ip a | grep 192.`.
+
+Then, on each node run 
+
+```bash
+export RDZV_ENDPOINT=10.15.42.1:1234
+```
+
+*Replace `10.15.42.1` with the private IP address of your master node and `1234` with any open port on the master node.*
+
+Then,  to start the training a training across two full nodes, run the following commands
+
+```bash
+# Node 0
+uv run  torchrun \
+    --nnodes=2 \
+    --nproc_per_node 8 \
+    --node-rank 0 \
+    --rdzv_endpoint=$RDZV_ENDPOINT \
+    src/prime_rl/trainer/rl/train.py
+```
+
+```bash
+# Node 1
+uv run  torchrun \
+    --nnodes=2 \
+    --nproc_per_node 8 \
+    --node-rank 1 \
+    --rdzv_endpoint=$RDZV_ENDPOINT \
+    src/prime_rl/trainer/rl/train.py
+```
+
+*It will automatically set up the local and global world information correctly.*
+
+**Multi-Node Inference**
+
+We rely on vLLM's internal load balancing for data parallel deployment ([docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html)).
+
+First, ensure that your nodes are in the same private network and can reach each other. If not, a simple solution is to set up a VPN using [Tailscale](https://tailscale.com). Follow their documentation to setup a VPN on each node. Then, configure the GLOO and NCCL network interface
+
+```bash
+export GLOO_SOCKET_IFNAME=eth0
+export NCCL_SOCKET_IFNAME=eth0
+```
+
+*For example, if you have colocated nodes this is often an Ethernet interface `eth0`. If you use Tailscale VPN, it typically installs a new network interface `tailscale0`.*
+
+Choose one of your nodes to be the head node. On this node, find the private IP with `ip a | grep 10.` or `ip a | grep 192.`
+
+```bash
+export DATA_PARALLEL_ADDRESS=10.15.42.1
+```
+
+*Replace `10.15.42.1` with the private IP address of your head node.*
+
+Then, to run TP=4 and DP=4 with DP ranks 0 and 1 on the head node and DP ranks 2 and 3 on the second node
+
+```bash
+# Node 0  (With IP <reachable-ip>)
+uv run inference \
+	--data-parallel-size 4 \
+	--tensor-parallel-size 4 \
+	--data-parallel-size-local 2 \
+	--data-parallel-address $DATA_PARALLEL_ADDRESS \
+	--data-parallel-rpc-port 13345
+```
+
+```bash
+# Node 1
+uv run inference \
+	--data-parallel-size 4 \
+	--tensor-parallel-size 4 \
+	--data-parallel-size-local 2 \
+	--data-parallel-address $DATA_PARALLEL_ADDRESS \
+	--data-parallel-rpc-port 13345 \
+	--data-parallel-start-rank 2 \
+	--headless
+```
+
+*We have found that restarting the server might require cleaning the RPC port with `fuser -k 13345/tcp` used for communication between the head node and the headless engine cores.*
 
 ### Multiple Experiments per Node
 
@@ -208,7 +299,7 @@ uv run rl \
   --trainer @ configs/reverse_text/train.toml \
   --orchestrator @ configs/reverse_text/orch.toml \
   --inference @ configs/reverse_text/infer.toml \
-  --outputs-dir outputs1
+  --output-dir outputs1
 ```
 
 For the second experiment, start a second tmux session named `exp-2` with outputs directory `outputs2`. In addition, specify a new server port for the inference engine and orchestrator (*will use the first 2 GPUs*)
@@ -225,7 +316,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl \
   --inference @ configs/reverse_text/infer.toml \
   --inference.server.port 8001 \
   --orchestrator.client.port 8001 \
-  --outputs-dir outputs2
+  --output-dir outputs2
 ```
 
 ## SFT
@@ -236,7 +327,7 @@ To check all available configuration options, run `uv run sft --help`.
 
 **Reverse Text**
 
-Finetune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) to reverse a tiny chunk of text, used as a warmup model train in `vf-reverse-text` environment. We use this run in CI.
+Finetune `PrimeIntellect/Qwen3-0.6B` (`Qwen/Qwen3-0.6B` but with Qwen-2.5 chat template) to reverse a tiny chunk of text, used as a warmup model train in `reverse-text` environment. We use this run in CI.
 
 ```bash
 uv run sft @ configs/reverse_text/sft.toml
@@ -257,14 +348,10 @@ uv run inference --model.name Qwen/Qwen3-0.6B --max-model-len 2048
 ```
 
 ```bash
-uv run eval --model.name Qwen/Qwen3-0.6B --benchmarks math500,aime24,aime25
+uv run eval --model.name Qwen/Qwen3-0.6B --environment-ids math500,aime2024,aime2025
 ```
 
 To check all available configuration options, run `uv run eval --help`.
-
-## Multi-Node Training
-
-*TBD*
 
 ## Developer
 
@@ -346,29 +433,28 @@ tmux kill-session -t prime-rl
 
 ### Environments
 
-`prime-rl` supports Environment modules built with `verifiers` ([repo](https://github.com/willccbb/verifiers)) for training tasks. To create a new Environment module template in the `environments/` folder, do:
+`prime-rl` supports Environment modules built with `verifiers` ([repo](https://github.com/willccbb/verifiers)) for training tasks. All of our current research environments live in a separate [Prime Environments](https://github.com/PrimeIntellect-ai/prime-environments) repository. 
 
-```bash
-uv run vf-init vf-custom-environment
-```
-Then, populate the `load_environment` function in `environments/vf_custom_environment/vf_custom_environment.py` with your instantiation logic, and declare any Environment-level dependencies in `environments/vf_custom_environment/pyproject.toml`.
+To add a new training or evaluation environment, please follow the instructions in the [Prime Environments](https://github.com/PrimeIntellect-ai/prime-environments) repository.
+
+To then use it as part of `prime-rl`, install the newly pushed environment via the Environment Hub. 
 
 To install your Environment module temporarily within `prime-rl`, do:
 ```bash
-uv run vf-install vf-custom-environment
+uv run prime env install custom-environment
 ```
 
 To persist your Environment module installation in the package-wide `pyproject.toml`, do:
 ```bash
-uv add --optional vf "vf-custom-environment @ ./environments/vf_custom_environment"
+uv add --optional vf "custom-environment @ https://hub.primeintellect.ai/your-username/custom-environment/@latest/custom-environment-0.1.3-py2.py3-none-any.whl"
 ```
 
 For quick API-based testing post-installation, do:
 ```bash
-uv run vf-eval vf-custom-environment # -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts each
+uv run vf-eval custom-environment # -h for config options; defaults to gpt-4.1-mini, 5 prompts, 3 rollouts each
 ```
 
-For training, create `trainer`/`inference`/`orchestrator` config files following the aforementioned examples, then set `id = vf-custom-environment` in the `[environment]` section of your `orchestrator` config (along with any desired Environment-level args in `[environment.args]`).
+For training, create `trainer`/`inference`/`orchestrator` config files following the aforementioned examples, then set `id = custom-environment` in the `[environment]` section of your `orchestrator` config (along with any desired Environment-level args in `[environment.args]`).
 
 ### W&B
 

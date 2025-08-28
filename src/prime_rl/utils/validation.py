@@ -34,6 +34,8 @@ def validate_shared_model_name(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
+    if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
+        return
     if trainer.model.name != orchestrator.model.name:
         raise ValueError(
             f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
@@ -55,13 +57,13 @@ def validate_shared_max_model_len(
         )
 
 
-def validate_shared_outputs_dir(
+def validate_shared_output_dir(
     trainer: RLTrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.outputs_dir != orchestrator.outputs_dir:
+    if trainer.output_dir != orchestrator.output_dir:
         raise ValueError(
-            f"Trainer outputs directory ({trainer.outputs_dir}) and orchestrator outputs directory ({orchestrator.outputs_dir}) are not the same. Please specify the same outputs directory for both."
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. Please specify the same outputs directory for both."
         )
 
 

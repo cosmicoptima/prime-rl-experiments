@@ -1,20 +1,19 @@
 from muon_fsdp2 import Muon
+from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.trainer.config import OptimizerConfigType
-from prime_rl.trainer.model import Model
 
 
-def setup_optimizer(config: OptimizerConfigType, model: Model) -> Optimizer:
+def setup_optimizer(config: OptimizerConfigType, model: nn.Module) -> Optimizer:
     match config.type:
         case "sgd":
             return SGD(
                 params=model.parameters(),
                 lr=config.lr,
                 weight_decay=config.weight_decay,
-                momentum = config.momentum,
-                nesterov = config.nesterov
-      
+                momentum=config.momentum,
+                nesterov=config.nesterov,
             )
         case "adamw":
             return AdamW(

@@ -16,11 +16,14 @@ from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
     setup_model,
+    is_tt_moe_model,
+    get_load_balance_stats,
 )
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     Tensors,
+    setup_torch_distributed,
     print_benchmark,
 )
 from prime_rl.trainer.world import get_world
@@ -43,11 +46,11 @@ def train(config: SFTTrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.monitor})")
-    monitor = setup_monitor(config.monitor, outputs_dir=config.outputs_dir, run_config=config)
+    monitor = setup_monitor(config.monitor, output_dir=config.output_dir, run_config=config)
 
-    # Set precision and cuda device
+    # Set precision
+    setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
-    torch.cuda.set_device(world.rank)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
@@ -64,11 +67,11 @@ def train(config: SFTTrainerConfig):
 
     # Set up the checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.outputs_dir, config.ckpt)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
     # Set up the weight checkpoint manager
     logger.info(f"Initializing weight checkpoint manager ({config.weights})")
-    weight_ckpt_manager = setup_weight_ckpt_manager(config.outputs_dir, config.weights, config.ckpt, async_level=0)
+    weight_ckpt_manager = setup_weight_ckpt_manager(config.output_dir, config.weights, config.ckpt, async_level=0)
     assert ckpt_manager is None or (ckpt_manager is not None and weight_ckpt_manager is not None), (
         "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )
@@ -91,7 +94,7 @@ def train(config: SFTTrainerConfig):
     is_first_step = True
     while True:
         # Save the full checkpoint (if we are at an interval step and not at the first or last step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps - 1
+        is_last_step = config.max_steps is not None and progress.step == config.max_steps
         save_ckpt_time = 0
         if (
             ckpt_manager is not None
@@ -142,6 +145,11 @@ def train(config: SFTTrainerConfig):
             pred_ids = probs.argmax(dim=-1)
             accuracy = torch.eq(pred_ids, target_ids).float()
 
+            if is_tt_moe_model(model):
+                load_balance_stats = get_load_balance_stats(model)
+                for k, v in load_balance_stats.items():
+                    tensors[k].append(v)
+
             # Add tensors to tensor dict for logging purposes
             tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
             tensors["accuracy"].append(accuracy[loss_mask].detach().to("cpu"))
@@ -159,9 +167,10 @@ def train(config: SFTTrainerConfig):
             loss.backward()
 
             # Debug log with *local, micro step* stats
-            logger.debug(
-                f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f}"
-            )
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f}"
+            if "max_vio" in tensors:
+                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
         logger.debug(f"Clipping gradients to {config.optim.max_norm}")
@@ -201,6 +210,8 @@ def train(config: SFTTrainerConfig):
         step_time = time.time() - step_start_time
         current_lr = optimizer.param_groups[0]["lr"]
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Accuracy: {tensor_stats['accuracy/mean']:.4f} | Grad. Norm: {grad_norm:.4f} | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}%"
+        if "max_vio/mean" in tensor_stats:
+            step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -263,6 +274,7 @@ def train(config: SFTTrainerConfig):
         logger.info("Writing final checkpoint")
         ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
+        ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     logger.success("SFT trainer finished!")
