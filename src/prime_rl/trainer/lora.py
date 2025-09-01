@@ -139,11 +139,6 @@ def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bo
     - "model.embed_tokens.weight" (full parameter name)
     - "model.embed_tokens" (module name)
     """
-    logger = get_logger()
-
-    if "embed_tokens" in param_name:
-        logger.info(f"CHECKING {param_name} against {trainable_patterns}")
-
     # Check full parameter name
     for pattern in trainable_patterns:
         if re.match(pattern, param_name):
@@ -154,9 +149,6 @@ def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bo
     for pattern in trainable_patterns:
         if re.match(pattern, module_name):
             return True
-    
-    if "embed_tokens" in param_name:
-        logger.info("FALSE")
     
     return False
 
@@ -174,22 +166,13 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
     trainable_params = 0
     total_params = 0
     trainable_details = []
+    frozen_details = []
     
-    # First, log all modules in the model for debugging
-    logger.info("=== ALL MODULES IN MODEL ===")
-    print([name for name, module in model.named_modules()])
-    # for name, module in model.named_modules():
-    #     if name:  # Skip the root module
-    #         logger.info(f"Module: {name} -> {module.__class__.__name__}")
+    # Debug: Show trainable patterns
+    logger.info(f"=== TRAINABLE PATTERNS ===")
+    logger.info(f"Trainable modules patterns: {config.trainable_modules}")
     
-    # logger.info("=== ALL PARAMETERS IN MODEL ===")
-    # print([name for name, param in model.named_parameters()])
-    
-    # logger.info("=== TRAINABLE PATTERNS ===")
-    # logger.info(f"LoRA is looking for: ['lora_A', 'lora_B']")
-    # logger.info(f"Trainable modules patterns: {config.trainable_modules}")
-    
-    # logger.info("=== PROCESSING PARAMETERS ===")
+    # Process all parameters
     for name, param in model.named_parameters():
         total_params += 1
         
@@ -198,7 +181,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = True
             trainable_params += 1
             trainable_details.append(f"{name} (LoRA)")
-            logger.info(f"✓ Keeping {name} trainable (LoRA parameter)")
+            logger.debug(f"✓ Keeping {name} trainable (LoRA parameter)")
         # Keep specified modules fully trainable
         elif _should_keep_trainable(name, config.trainable_modules):
             param.requires_grad = True
@@ -217,22 +200,36 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
         else:
             param.requires_grad = False
             frozen_params += 1
+            frozen_details.append(name)
             logger.debug(f"✗ Freezing {name}")
     
-    # logger.info(f"=== FINAL SUMMARY ===")
-    # logger.info(f"Parameter freezing: {frozen_params} frozen, {trainable_params} trainable, {total_params} total")
-    # logger.info(f"Trainable parameters: {trainable_details}")
+    logger.info(f"=== FINAL SUMMARY ===")
+    logger.info(f"Parameter freezing: {frozen_params} frozen, {trainable_params} trainable, {total_params} total")
+    logger.info(f"Trainable parameters: {trainable_details}")
+    
+    # Show some frozen parameters for debugging
+    if frozen_details and logger.level <= 10:  # DEBUG level
+        logger.debug(f"First 10 frozen parameters: {frozen_details[:10]}")
 
 
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     """
     Apply LoRA to target modules in the model and freeze non-LoRA parameters.
     
+    WARNING: This function modifies requires_grad on parameters. If using FSDP2,
+    this MUST be called BEFORE setup_fsdp() to avoid dtensor/sharding issues.
+    
     Args:
         model: The model to apply LoRA to
         config: LoRA configuration
     """
     logger = get_logger()
+    
+    # Check if model is already wrapped with FSDP
+    from torch.distributed.fsdp import FSDPModule
+    if any(isinstance(m, FSDPModule) for m in model.modules()):
+        logger.error("Model is already wrapped with FSDP! LoRA must be applied BEFORE FSDP setup to avoid dtensor issues.")
+        raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
     
     if not config.enabled:
         logger.debug("LoRA is disabled, skipping LoRA application")
