@@ -5,6 +5,7 @@ project = "celeste-0001"
 
 [model]
 name = "Qwen/Qwen2.5-32B-Instruct"
+liger_kernel = true
 
 [model.lora]
 enabled = true

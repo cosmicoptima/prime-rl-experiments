@@ -3,5 +3,4 @@ name = "Qwen/Qwen2.5-32B-Instruct"
 max_model_len = 4096
 
 [parallel]
-dp = 1
-tp = 1
+tp = 2
