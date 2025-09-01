@@ -1,5 +1,5 @@
 [model]
-name = "Qwen/Qwen2.5-32B-Instruct"
+name = "arcee-ai/GLM-4-32B-Base-32K"
 max_model_len = 3072
 
 [parallel]
