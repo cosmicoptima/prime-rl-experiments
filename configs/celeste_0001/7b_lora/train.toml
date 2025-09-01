@@ -28,7 +28,7 @@ merge_on_save = true
 freq = 1
 
 [optim]
-lr = 2e-4
+lr = 1e-5
 max_norm = 0.02
 weight_decay = 0.001
 
