@@ -174,8 +174,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
     #         logger.info(f"Module: {name} -> {module.__class__.__name__}")
     
     logger.info("=== ALL PARAMETERS IN MODEL ===")
-    for name, param in model.named_parameters():
-        logger.info(f"Parameter: {name} -> shape={param.shape}, requires_grad={param.requires_grad}")
+    print([name for name, param in model.named_parameters()])
     
     # logger.info("=== TRAINABLE PATTERNS ===")
     # logger.info(f"LoRA is looking for: ['lora_A', 'lora_B']")
