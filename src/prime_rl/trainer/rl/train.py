@@ -252,15 +252,42 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
 
-            # Log token counts per example in the batch
+            # Log token counts per example in the batch (top 10, middle 10, bottom 10)
             if micro_step == 0:  # Log only for first micro-batch to avoid spam
-                tokens_per_example = []
+                # Calculate active tokens for each example
+                example_token_counts = []
                 for i in range(micro_batch_size):
                     active_tokens = loss_mask[i].sum().item()
-                    total_tokens = seq_len
-                    tokens_per_example.append(f"Ex{i}: {active_tokens}/{total_tokens}")
-                logger.info(f"Tokens per example in batch: {', '.join(tokens_per_example)}")
-                logger.info(f"Total active tokens in micro-batch: {loss_mask.sum().item()}")
+                    example_token_counts.append((i, active_tokens, seq_len))
+                
+                # Sort by active token count (descending)
+                example_token_counts.sort(key=lambda x: x[1], reverse=True)
+                
+                # Get top 10, middle 10, and bottom 10
+                top_10 = example_token_counts[:10]
+                bottom_10 = example_token_counts[-10:]
+                
+                # Calculate middle 10 (around the median)
+                total_examples = len(example_token_counts)
+                middle_start = max(0, (total_examples // 2) - 5)
+                middle_end = min(total_examples, middle_start + 10)
+                middle_10 = example_token_counts[middle_start:middle_end]
+                
+                # Format for logging
+                def format_examples(examples, label):
+                    formatted = [f"Ex{idx}: {active}/{total}" for idx, active, total in examples]
+                    return f"{label}: {', '.join(formatted)}"
+                
+                logger.info(f"Micro-batch token distribution (active/total):")
+                logger.info(format_examples(top_10, "Top 10"))
+                if middle_10 and len(example_token_counts) > 20:  # Only show middle if we have enough examples
+                    logger.info(format_examples(middle_10, "Middle 10"))
+                logger.info(format_examples(bottom_10, "Bottom 10"))
+                
+                # Summary statistics
+                total_active = sum(count[1] for count in example_token_counts)
+                avg_active = total_active / micro_batch_size if micro_batch_size > 0 else 0
+                logger.info(f"Summary: Total active tokens: {total_active}, Average per example: {avg_active:.1f}")
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
