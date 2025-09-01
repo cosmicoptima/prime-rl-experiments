@@ -252,6 +252,16 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
 
+            # Log token counts per example in the batch
+            if micro_step == 0:  # Log only for first micro-batch to avoid spam
+                tokens_per_example = []
+                for i in range(micro_batch_size):
+                    active_tokens = loss_mask[i].sum().item()
+                    total_tokens = seq_len
+                    tokens_per_example.append(f"Ex{i}: {active_tokens}/{total_tokens}")
+                logger.info(f"Tokens per example in batch: {', '.join(tokens_per_example)}")
+                logger.info(f"Total active tokens in micro-batch: {loss_mask.sum().item()}")
+
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
             shifted_logits = shift_logits(logits)
