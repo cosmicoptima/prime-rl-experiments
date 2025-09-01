@@ -17,8 +17,10 @@ target_modules = [
    ".*\\.k_proj$", 
    ".*\\.v_proj$",
    ".*\\.o_proj$",
+]
+trainable_modules = [
    "lm_head$",
-   ".*\\.embeddings$",
+   ".*\\.embed_tokens$",
 ]
 merge_on_save = true
 
