@@ -169,9 +169,10 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
     
     # First, log all modules in the model for debugging
     logger.info("=== ALL MODULES IN MODEL ===")
-    for name, module in model.named_modules():
-        if name:  # Skip the root module
-            logger.info(f"Module: {name} -> {module.__class__.__name__}")
+    print([name for name, module in model.named_modules()])
+    # for name, module in model.named_modules():
+    #     if name:  # Skip the root module
+    #         logger.info(f"Module: {name} -> {module.__class__.__name__}")
     
     # logger.info("=== ALL PARAMETERS IN MODEL ===")
     # print([name for name, param in model.named_parameters()])
