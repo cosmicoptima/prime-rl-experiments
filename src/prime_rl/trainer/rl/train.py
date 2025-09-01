@@ -308,8 +308,11 @@ def train(config: RLTrainerConfig):
 
             # Collect token counts for this micro-batch
             for i in range(micro_batch_size):
-                active_tokens = loss_mask[i].sum().item()
-                batch_token_counts.append((len(batch_token_counts), active_tokens, seq_len))
+                active_tokens = loss_mask[i].sum().item()  # Output tokens (loss_mask=True)
+                input_tokens = (~loss_mask[i]).sum().item()  # Input tokens (loss_mask=False)
+                total_tokens = seq_len
+                # Store: (index, input_tokens, output_tokens, total_tokens)
+                batch_token_counts.append((len(batch_token_counts), input_tokens, active_tokens, total_tokens))
 
         # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
@@ -342,7 +345,7 @@ def train(config: RLTrainerConfig):
 
         # Log token distribution across the entire batch
         if batch_token_counts:
-            # Sort by active token count (descending)
+            # Sort by INPUT token count (descending)
             token_counts_sorted = sorted(batch_token_counts, key=lambda x: x[1], reverse=True)
             
             # Get top 10, middle 10, and bottom 10
@@ -357,23 +360,27 @@ def train(config: RLTrainerConfig):
             
             # Format for logging
             def format_examples(examples, label):
-                formatted = [f"Ex{idx}: {active}/{total}" for idx, active, total in examples]
+                formatted = [f"Ex{idx}: in={input_tok}/out={output_tok}/tot={total}" 
+                            for idx, input_tok, output_tok, total in examples]
                 return f"{label}: {', '.join(formatted)}"
             
-            logger.info(f"Batch token distribution across {num_examples} examples (active/total):")
-            logger.info(format_examples(top_10, "Top 10"))
-            if middle_10 and num_examples > 20:  # Only show middle if we have enough examples
+            logger.info(f"Batch token distribution across {num_examples} examples (sorted by INPUT tokens):")
+            logger.info(format_examples(top_10, "Top 10 (most input)"))
+            if middle_10 and num_examples > 20:
                 logger.info(format_examples(middle_10, "Middle 10"))
-            logger.info(format_examples(bottom_10, "Bottom 10"))
+            logger.info(format_examples(bottom_10, "Bottom 10 (least input)"))
             
             # Summary statistics
-            total_active = sum(count[1] for count in batch_token_counts)
-            avg_active = total_active / num_examples if num_examples > 0 else 0
-            max_active = top_10[0][1] if top_10 else 0
-            min_active = bottom_10[-1][1] if bottom_10 else 0
+            total_input = sum(count[1] for count in batch_token_counts)
+            total_output = sum(count[2] for count in batch_token_counts)
+            avg_input = total_input / num_examples if num_examples > 0 else 0
+            avg_output = total_output / num_examples if num_examples > 0 else 0
+            max_input = top_10[0][1] if top_10 else 0
+            min_input = bottom_10[-1][1] if bottom_10 else 0
             
-            logger.info(f"Summary: Total examples: {num_examples}, Total active tokens: {total_active}")
-            logger.info(f"Average active tokens: {avg_active:.1f}, Max: {max_active}, Min: {min_active}")
+            logger.info(f"Summary: Total examples: {num_examples}")
+            logger.info(f"Input tokens - Total: {total_input}, Avg: {avg_input:.1f}, Max: {max_input}, Min: {min_input}")
+            logger.info(f"Output tokens - Total: {total_output}, Avg: {avg_output:.1f}")
 
         # Compute step metrics
         num_local_tokens = micro_batch_size * seq_len * num_micro_batches
