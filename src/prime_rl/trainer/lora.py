@@ -165,14 +165,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
     frozen_params = 0
     trainable_params = 0
     total_params = 0
-    trainable_details = []
-    frozen_details = []
     
-    # Debug: Show trainable patterns
-    logger.info(f"=== TRAINABLE PATTERNS ===")
-    logger.info(f"Trainable modules patterns: {config.trainable_modules}")
-    
-    # Process all parameters
     for name, param in model.named_parameters():
         total_params += 1
         
@@ -180,35 +173,16 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
         if any(lora_param in name for lora_param in ['lora_A', 'lora_B']):
             param.requires_grad = True
             trainable_params += 1
-            trainable_details.append(f"{name} (LoRA)")
-            logger.debug(f"✓ Keeping {name} trainable (LoRA parameter)")
         # Keep specified modules fully trainable
         elif _should_keep_trainable(name, config.trainable_modules):
             param.requires_grad = True
             trainable_params += 1
-            trainable_details.append(f"{name} (trainable_modules)")
-            # Log which pattern matched and whether it was param or module name
-            module_name = name.rsplit('.', 1)[0] if '.' in name else name
-            for pattern in config.trainable_modules:
-                if re.match(pattern, name):
-                    logger.info(f"✓ Keeping {name} trainable (matched parameter pattern: '{pattern}')")
-                    break
-                elif re.match(pattern, module_name):
-                    logger.info(f"✓ Keeping {name} trainable (matched module pattern: '{pattern}' on module '{module_name}')")
-                    break
         # Freeze everything else
         else:
             param.requires_grad = False
             frozen_params += 1
-            frozen_details.append(name)
-            logger.debug(f"✗ Freezing {name}")
     
-    logger.info(f"=== FINAL SUMMARY ===")
-    logger.info(f"Parameter freezing: {frozen_params} frozen, {trainable_params} trainable, {total_params} total")
-    logger.info(f"Trainable parameters: {trainable_details}")
-    
-    # Show some frozen parameters for debugging
-    logger.debug(f"First 10 frozen parameters: {frozen_details[:10]}")
+    logger.info(f"Parameter freezing summary: {frozen_params} frozen, {trainable_params} trainable, {total_params} total")
 
 
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
