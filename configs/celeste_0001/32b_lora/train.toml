@@ -21,6 +21,7 @@ target_modules = [
 trainable_modules = [
    "lm_head$",
    ".*\\.embed_tokens$",
+   ".*\\.norm$",
 ]
 merge_on_save = true
 
