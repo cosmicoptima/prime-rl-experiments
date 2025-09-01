@@ -90,7 +90,7 @@ def load_environment(**kwargs) -> vf.Environment:
     dataset = dataset.map(lambda x: {"question": render_question(x), "answer": calculate_answer(x), "task": "reddit_user_differentiation"})
     
     # Filter out examples that are too long
-    MAX_PROMPT_TOKENS = 3100 # 3264 ... - 128 because 3264 still errored at one point
+    MAX_PROMPT_TOKENS = 2076 # 3264 ... - 128 because 3264 still errored at one point
     
     print("Filtering dataset by token count...")
     original_size = len(dataset)
