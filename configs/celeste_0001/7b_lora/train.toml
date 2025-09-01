@@ -29,7 +29,7 @@ freq = 1
 
 [optim]
 lr = 1e-6
-max_norm = 0.001
+max_norm = 0.02
 weight_decay = 0.001
 
 [ckpt]
