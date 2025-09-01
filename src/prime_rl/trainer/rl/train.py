@@ -243,7 +243,8 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
-        batch_token_counts = []  # Collect across all micro-batches
+        # Collect token counts across all micro-batches
+        batch_token_counts = []
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -342,17 +343,17 @@ def train(config: RLTrainerConfig):
         # Log token distribution across the entire batch
         if batch_token_counts:
             # Sort by active token count (descending)
-            batch_token_counts.sort(key=lambda x: x[1], reverse=True)
+            token_counts_sorted = sorted(batch_token_counts, key=lambda x: x[1], reverse=True)
             
             # Get top 10, middle 10, and bottom 10
-            num_examples = len(batch_token_counts)
-            top_10 = batch_token_counts[:10]
-            bottom_10 = batch_token_counts[-10:]
+            num_examples = len(token_counts_sorted)
+            top_10 = token_counts_sorted[:10]
+            bottom_10 = token_counts_sorted[-10:]
             
             # Calculate middle 10 (around the median)
             middle_start = max(0, (num_examples // 2) - 5)
             middle_end = min(num_examples, middle_start + 10)
-            middle_10 = batch_token_counts[middle_start:middle_end]
+            middle_10 = token_counts_sorted[middle_start:middle_end]
             
             # Format for logging
             def format_examples(examples, label):
@@ -366,7 +367,7 @@ def train(config: RLTrainerConfig):
             logger.info(format_examples(bottom_10, "Bottom 10"))
             
             # Summary statistics
-            total_active = sum(count[1] for count in token_counts)
+            total_active = sum(count[1] for count in batch_token_counts)
             avg_active = total_active / num_examples if num_examples > 0 else 0
             max_active = top_10[0][1] if top_10 else 0
             min_active = bottom_10[-1][1] if bottom_10 else 0
