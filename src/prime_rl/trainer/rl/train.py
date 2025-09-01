@@ -243,6 +243,7 @@ def train(config: RLTrainerConfig):
 
         logger.info(f"Starting forward and backward pass ({num_micro_batches=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        batch_token_counts = []  # Collect across all micro-batches
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -251,43 +252,6 @@ def train(config: RLTrainerConfig):
             old_logprobs = micro_batch["logprobs"].to("cuda")
             temperature = micro_batch["temperature"]
             micro_batch_size, seq_len = input_ids.shape
-
-            # Log token counts per example in the batch (top 10, middle 10, bottom 10)
-            if micro_step == 0:  # Log only for first micro-batch to avoid spam
-                # Calculate active tokens for each example
-                example_token_counts = []
-                for i in range(micro_batch_size):
-                    active_tokens = loss_mask[i].sum().item()
-                    example_token_counts.append((i, active_tokens, seq_len))
-                
-                # Sort by active token count (descending)
-                example_token_counts.sort(key=lambda x: x[1], reverse=True)
-                
-                # Get top 10, middle 10, and bottom 10
-                top_10 = example_token_counts[:10]
-                bottom_10 = example_token_counts[-10:]
-                
-                # Calculate middle 10 (around the median)
-                total_examples = len(example_token_counts)
-                middle_start = max(0, (total_examples // 2) - 5)
-                middle_end = min(total_examples, middle_start + 10)
-                middle_10 = example_token_counts[middle_start:middle_end]
-                
-                # Format for logging
-                def format_examples(examples, label):
-                    formatted = [f"Ex{idx}: {active}/{total}" for idx, active, total in examples]
-                    return f"{label}: {', '.join(formatted)}"
-                
-                logger.info(f"Micro-batch token distribution (active/total):")
-                logger.info(format_examples(top_10, "Top 10"))
-                if middle_10 and len(example_token_counts) > 20:  # Only show middle if we have enough examples
-                    logger.info(format_examples(middle_10, "Middle 10"))
-                logger.info(format_examples(bottom_10, "Bottom 10"))
-                
-                # Summary statistics
-                total_active = sum(count[1] for count in example_token_counts)
-                avg_active = total_active / micro_batch_size if micro_batch_size > 0 else 0
-                logger.info(f"Summary: Total active tokens: {total_active}, Average per example: {avg_active:.1f}")
 
             # Forward pass
             logits = forward(model, input_ids, position_ids).contiguous()
@@ -341,6 +305,11 @@ def train(config: RLTrainerConfig):
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
+            # Collect token counts for this micro-batch
+            for i in range(micro_batch_size):
+                active_tokens = loss_mask[i].sum().item()
+                batch_token_counts.append((len(batch_token_counts), active_tokens, seq_len))
+
         # Optionally, clip the gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
@@ -369,6 +338,41 @@ def train(config: RLTrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+
+        # Log token distribution across the entire batch
+        if batch_token_counts:
+            # Sort by active token count (descending)
+            batch_token_counts.sort(key=lambda x: x[1], reverse=True)
+            
+            # Get top 10, middle 10, and bottom 10
+            num_examples = len(batch_token_counts)
+            top_10 = batch_token_counts[:10]
+            bottom_10 = batch_token_counts[-10:]
+            
+            # Calculate middle 10 (around the median)
+            middle_start = max(0, (num_examples // 2) - 5)
+            middle_end = min(num_examples, middle_start + 10)
+            middle_10 = batch_token_counts[middle_start:middle_end]
+            
+            # Format for logging
+            def format_examples(examples, label):
+                formatted = [f"Ex{idx}: {active}/{total}" for idx, active, total in examples]
+                return f"{label}: {', '.join(formatted)}"
+            
+            logger.info(f"Batch token distribution across {num_examples} examples (active/total):")
+            logger.info(format_examples(top_10, "Top 10"))
+            if middle_10 and num_examples > 20:  # Only show middle if we have enough examples
+                logger.info(format_examples(middle_10, "Middle 10"))
+            logger.info(format_examples(bottom_10, "Bottom 10"))
+            
+            # Summary statistics
+            total_active = sum(count[1] for count in token_counts)
+            avg_active = total_active / num_examples if num_examples > 0 else 0
+            max_active = top_10[0][1] if top_10 else 0
+            min_active = bottom_10[-1][1] if bottom_10 else 0
+            
+            logger.info(f"Summary: Total examples: {num_examples}, Total active tokens: {total_active}")
+            logger.info(f"Average active tokens: {avg_active:.1f}, Max: {max_active}, Min: {min_active}")
 
         # Compute step metrics
         num_local_tokens = micro_batch_size * seq_len * num_micro_batches
