@@ -17,10 +17,8 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_step_path, get_weight_ckpt_model_path, get_weights_dir
 
-
 def _has_tt_moe_layers(state_dict: dict[str, Tensor]) -> bool:
     return any("mlp.router.gate" in i for i in state_dict.keys())
-
 
 def _has_lora_layers(model: nn.Module) -> bool:
     """Check if model has LoRA layers."""
@@ -29,10 +27,8 @@ def _has_lora_layers(model: nn.Module) -> bool:
             return True
     return False
 
-
 def _get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     return max(int(i.split(".")[2]) for i in state_dict.keys() if "model.layers." in i) + 1
-
 
 def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
     num_layers = _get_max_layer_num(state_dict)
@@ -84,13 +80,11 @@ def _convert_tt_moe_to_hf_(state_dict: dict[str, Tensor]):
         del state_dict[f"model.layers.{i}.mlp.experts.w2"]
         del state_dict[f"model.layers.{i}.mlp.experts.w3"]
 
-
 def _clean_lora_state_dict(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
     """Remove LoRA parameters and fix LoRA base layer key names for HF compatibility."""
     clean_state_dict = {}
     lora_params_removed = 0
     base_layer_keys_renamed = 0
-    
     
     for key, value in state_dict.items():
         # Skip LoRA parameters completely
@@ -106,12 +100,7 @@ def _clean_lora_state_dict(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         else:
             clean_state_dict[key] = value
     
-    
-    # Print a sample of the final keys for verification
-    sample_keys = list(clean_state_dict.keys())[:5]
-    
     return clean_state_dict
-
 
 def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.Tensor]]:
     """
@@ -122,7 +111,6 @@ def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.T
     """
     original_lora_state = {}
     merged_count = 0
-    
     
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
@@ -147,7 +135,6 @@ def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.T
     
     return original_lora_state
 
-
 def _restore_lora_weights_inplace(model: nn.Module, original_lora_state: dict[str, dict[str, torch.Tensor]]) -> None:
     """
     Restore original LoRA weights and subtract merged weights from base layers.
@@ -170,8 +157,6 @@ def _restore_lora_weights_inplace(model: nn.Module, original_lora_state: dict[st
             module.base_layer.weight.data.sub_(delta_weight)
             restored_count += 1
     
-
-
 class WeightCheckpointManager:
     """Utility class to save and cleanup HF-compatible weight checkpoints."""
 
@@ -197,7 +182,6 @@ class WeightCheckpointManager:
         start_time = time.time()
         self._logger.debug("Gathering sharded weights")
         
-
         # Handle LoRA merging if requested and model has LoRA layers
         original_lora_state = None
         if merge_lora and _has_lora_layers(model):
@@ -293,7 +277,6 @@ class WeightCheckpointManager:
             if not merge_lora:
                 merge_lora = _has_lora_layers(model)
         
-
         cpu_state = self._gather_weights(model, dtype, merge_lora)
         if _has_tt_moe_layers(cpu_state):
             _convert_tt_moe_to_hf_(cpu_state)
@@ -345,7 +328,6 @@ class WeightCheckpointManager:
             thread.start()
         else:
             self._maybe_clean(step)
-
 
 def setup_weight_ckpt_manager(
     output_dir: Path,
