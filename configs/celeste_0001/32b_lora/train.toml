@@ -10,13 +10,15 @@ liger_kernel = true
 [model.lora]
 enabled = true
 rank = 16
-alpha = 32.0
+alpha = 256.0
 dropout = 0.05
 target_modules = [
    ".*\\.q_proj$",
    ".*\\.k_proj$", 
    ".*\\.v_proj$",
-   ".*\\.o_proj$"
+   ".*\\.o_proj$",
+   "lm_head$",
+   ".*\\.embed_tokens$",
 ]
 merge_on_save = true
 
