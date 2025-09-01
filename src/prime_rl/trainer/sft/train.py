@@ -1,10 +1,12 @@
 import time
+from contextlib import nullcontext
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 import torch
 from torch.nn.functional import cross_entropy, softmax
+from torch.distributed.tensor.experimental import context_parallel
 from loguru import logger
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.weights import setup_weight_ckpt_manager
@@ -19,6 +21,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
+from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
@@ -52,9 +55,12 @@ def train(config: SFTTrainerConfig):
     setup_torch_distributed()
     torch.set_float32_matmul_precision("high")
 
+    # Initialize parallel dimensions
+    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+
     # Initialize the model and tokenizer
     logger.info(f"Initializing model and tokenizer ({config.model})")
-    model = setup_model(config.model)
+    model = setup_model(config.model, parallel_dims)
     tokenizer = setup_tokenizer(config.model)
 
     # Set up the optimizer
@@ -76,19 +82,31 @@ def train(config: SFTTrainerConfig):
         "If ckpt_manager is set, weight_ckpt_manager must also be set"
     )
 
+    # Set up the dataset and dataloader
+    logger.info(f"Initializing data ({config.data})")
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp * config.model.tp)
+    dataloader = setup_dataloader(dataset, tokenizer, config.data)
+    dataiter = iter(dataloader)
+
+    # Check that the world size and batch configuration is compatible
+    num_micro_batches = config.data.batch_size // config.data.micro_batch_size
+    if world.world_size > num_micro_batches:
+        raise ValueError(
+            f"There must be at least one micro batch per rank, but only have {num_micro_batches} micro batches for {world.world_size} ranks."
+        )
+    if num_micro_batches % world.world_size != 0:
+        raise ValueError(
+            f"The number of micro batches ({num_micro_batches}) must be divisible by the world size ({world.world_size})."
+        )
+
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if ckpt_manager is not None and config.ckpt and config.ckpt.resume_step:
-        logger.info(f"Resuming training from checkpoint step `{config.ckpt.resume_step}`")
-        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step)
+        logger.info(f"Resuming training from checkpoint step {config.ckpt.resume_step}")
+        ckpt_manager.load(model, [optimizer], scheduler, progress, step=config.ckpt.resume_step, dataloader=dataloader)
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataloader_state={dataloader.state_dict()['dataset_state']})"
     )
-
-    # Set up the dataset and dataloader (optionaly, use a fake dataset for debugging)
-    logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data)
-    dataloader = iter(setup_dataloader(dataset, tokenizer, config.data))
 
     logger.info(f"Starting training loop ({config.max_steps=})")
     is_first_step = True
@@ -106,7 +124,7 @@ def train(config: SFTTrainerConfig):
         ):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.time()
-            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+            ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
             weight_ckpt_manager.save(model, tokenizer, step=progress.step)
             save_ckpt_time = time.time() - save_ckpt_start_time
 
@@ -122,10 +140,16 @@ def train(config: SFTTrainerConfig):
 
         step_start_time = time.time()
         forward_backward_start_time = time.time()
+        epoch = 0
         tensors = Tensors()  # Used to accumulate tensor statistics across grad acc and ranks for logging
-        grad_accum_steps = config.data.batch_size // (config.data.micro_batch_size * world.world_size)
+        grad_accum_steps = (
+            config.data.batch_size
+            * config.model.cp
+            * config.model.tp
+            // (config.data.micro_batch_size * world.world_size)
+        )
         for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataloader)
+            micro_batch = next(dataiter)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             target_ids = micro_batch["target_ids"].to("cuda")
@@ -133,47 +157,56 @@ def train(config: SFTTrainerConfig):
             epoch = micro_batch["epoch"]
             assert input_ids.shape[0] == position_ids.shape[0]
 
-            # Forward pass
-            logits = forward(model, input_ids, position_ids).contiguous()
-            B, L, V = logits.shape
+            if config.model.cp > 1:
+                maybe_context_parallel = context_parallel(
+                    parallel_dims.world_mesh["cp"],
+                    buffers=tuple([input_ids, position_ids, target_ids, loss_mask]),
+                    buffer_seq_dims=(1, 1, 1, 1),
+                )
+            else:
+                maybe_context_parallel = nullcontext()
 
-            # Compute loss
-            loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
+            with maybe_context_parallel:
+                # Forward pass
+                logits = forward(model, input_ids, position_ids).contiguous()
+                B, L, V = logits.shape
 
-            # Compute accuracy
-            probs = softmax(logits, dim=-1)
-            pred_ids = probs.argmax(dim=-1)
-            accuracy = torch.eq(pred_ids, target_ids).float()
+                # Compute loss
+                loss = cross_entropy(logits.view(-1, V), target_ids.view(-1), reduction="none").view(B, L)
 
-            if is_tt_moe_model(model):
-                load_balance_stats = get_load_balance_stats(model)
-                for k, v in load_balance_stats.items():
-                    tensors[k].append(v)
+                # Compute accuracy
+                probs = softmax(logits, dim=-1)
+                pred_ids = probs.argmax(dim=-1)
+                accuracy = torch.eq(pred_ids, target_ids).float()
 
-            # Add tensors to tensor dict for logging purposes
-            tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
-            tensors["accuracy"].append(accuracy[loss_mask].detach().to("cpu"))
+                if is_tt_moe_model(model):
+                    load_balance_stats = get_load_balance_stats(model)
+                    for k, v in load_balance_stats.items():
+                        tensors[k].append(v)
 
-            # Mean reduction of unmasked tokens
-            loss = loss[loss_mask].mean()
+                # Add tensors to tensor dict for logging purposes
+                tensors["loss"].append(loss[loss_mask].detach().to("cpu"))
+                tensors["accuracy"].append(accuracy[loss_mask].detach().to("cpu"))
 
-            # Scale loss by number of gradient accumulation steps
-            loss /= grad_accum_steps
+                # Mean reduction of unmasked tokens
+                loss = loss[loss_mask].mean()
 
-            # Delete logits before backward pass to avoid memory spike
-            del logits
+                # Scale loss by number of gradient accumulation steps
+                loss /= grad_accum_steps
 
-            # Backward pass
-            loss.backward()
+                # Delete logits before backward pass to avoid memory spike
+                del logits
+
+                # Backward pass
+                loss.backward()
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step} | Loss: {tensors['loss'][-1].mean().item():.4f} | Accuracy: {tensors['accuracy'][-1].mean().item():.4f} | Dataloader Step: {dataloader.state_dict()['dataset_state']['step']}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # Optionally, clip the gradients
-        logger.debug(f"Clipping gradients to {config.optim.max_norm}")
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
 
         # Update the model parameters
@@ -200,7 +233,7 @@ def train(config: SFTTrainerConfig):
         # Compute step metrics
         num_tokens = config.data.batch_size * config.data.seq_len
         progress.total_tokens += num_tokens
-        progress.total_samples += config.data.batch_size
+        progress.total_samples = dataloader.state_dict()["dataset_state"]["step"]
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -272,7 +305,7 @@ def train(config: SFTTrainerConfig):
     # Write final checkpoint
     if config.ckpt and ckpt_manager is not None and weight_ckpt_manager is not None:
         logger.info("Writing final checkpoint")
-        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step)
+        ckpt_manager.save(model, [optimizer], scheduler, progress, step=progress.step, dataloader=dataloader)
         weight_ckpt_manager.save(model, tokenizer, step=progress.step)
         ckpt_manager.maybe_clean()
 
