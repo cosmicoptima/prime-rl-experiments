@@ -91,13 +91,11 @@ def _clean_lora_state_dict(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
     lora_params_removed = 0
     base_layer_keys_renamed = 0
     
-    print(f"[CHECKPOINT DEBUG] Processing {len(state_dict)} keys from state dict")
     
     for key, value in state_dict.items():
         # Skip LoRA parameters completely
         if 'lora_A' in key or 'lora_B' in key:
             lora_params_removed += 1
-            print(f"[CHECKPOINT DEBUG] Removing LoRA parameter: {key}")
             continue
         
         # Fix keys from LoRA base layers: remove .base_layer from path
@@ -105,16 +103,12 @@ def _clean_lora_state_dict(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
             new_key = key.replace('.base_layer.', '.')
             clean_state_dict[new_key] = value
             base_layer_keys_renamed += 1
-            print(f"[CHECKPOINT DEBUG] Renamed key: {key} -> {new_key}")
         else:
             clean_state_dict[key] = value
     
-    print(f"[CHECKPOINT DEBUG] Cleanup complete: removed {lora_params_removed} LoRA params, renamed {base_layer_keys_renamed} base layer keys")
-    print(f"[CHECKPOINT DEBUG] Final state dict has {len(clean_state_dict)} keys")
     
     # Print a sample of the final keys for verification
     sample_keys = list(clean_state_dict.keys())[:5]
-    print(f"[CHECKPOINT DEBUG] Sample final keys: {sample_keys}")
     
     return clean_state_dict
 
@@ -129,11 +123,9 @@ def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.T
     original_lora_state = {}
     merged_count = 0
     
-    print("[CHECKPOINT DEBUG] Starting LoRA weight merging")
     
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
-            print(f"[CHECKPOINT DEBUG] Merging LoRA module: {name}")
             
             # Store original LoRA state
             original_lora_state[name] = {
@@ -144,7 +136,6 @@ def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.T
             # Compute LoRA update: ΔW = B @ A * scaling
             delta_weight = (module.lora_B @ module.lora_A) * module.scaling
             delta_norm = delta_weight.norm().item()
-            print(f"[CHECKPOINT DEBUG] LoRA delta norm for {name}: {delta_norm:.6f}")
             
             # Merge into base layer
             module.base_layer.weight.data.add_(delta_weight)
@@ -154,7 +145,6 @@ def _merge_lora_weights_inplace(model: nn.Module) -> dict[str, dict[str, torch.T
             module.lora_B.data.zero_()
             merged_count += 1
     
-    print(f"[CHECKPOINT DEBUG] Merged {merged_count} LoRA modules")
     return original_lora_state
 
 
@@ -167,11 +157,9 @@ def _restore_lora_weights_inplace(model: nn.Module, original_lora_state: dict[st
         original_lora_state: Original LoRA state from _merge_lora_weights_inplace
     """
     restored_count = 0
-    print("[CHECKPOINT DEBUG] Starting LoRA weight restoration")
     
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear) and name in original_lora_state:
-            print(f"[CHECKPOINT DEBUG] Restoring LoRA module: {name}")
             
             # Restore original LoRA parameters
             module.lora_A.data.copy_(original_lora_state[name]['lora_A'])
@@ -182,7 +170,6 @@ def _restore_lora_weights_inplace(model: nn.Module, original_lora_state: dict[st
             module.base_layer.weight.data.sub_(delta_weight)
             restored_count += 1
     
-    print(f"[CHECKPOINT DEBUG] Restored {restored_count} LoRA modules")
 
 
 class WeightCheckpointManager:
@@ -210,16 +197,13 @@ class WeightCheckpointManager:
         start_time = time.time()
         self._logger.debug("Gathering sharded weights")
         
-        print(f"[CHECKPOINT DEBUG] Starting weight gathering, merge_lora={merge_lora}")
 
         # Handle LoRA merging if requested and model has LoRA layers
         original_lora_state = None
         if merge_lora and _has_lora_layers(model):
-            print("[CHECKPOINT DEBUG] Model has LoRA layers, performing temporary merge")
             self._logger.debug("Temporarily merging LoRA weights for checkpoint")
             original_lora_state = _merge_lora_weights_inplace(model)
         else:
-            print("[CHECKPOINT DEBUG] No LoRA merging needed")
 
         try:
             # Suppress torch.distributed warnings during checkpoint saving
@@ -246,21 +230,16 @@ class WeightCheckpointManager:
         finally:
             # Always restore original LoRA state, even if gathering fails
             if original_lora_state is not None:
-                print("[CHECKPOINT DEBUG] Restoring original LoRA state")
                 self._logger.debug("Restoring original LoRA weights")
                 _restore_lora_weights_inplace(model, original_lora_state)
 
         # Always clean up the state dict for HF compatibility
-        print(f"[CHECKPOINT DEBUG] Raw state dict has {len(cpu_state)} keys")
         if any('.base_layer.' in key or 'lora_A' in key or 'lora_B' in key for key in cpu_state.keys()):
-            print("[CHECKPOINT DEBUG] Cleaning LoRA artifacts from state dict")
             self._logger.debug("Cleaning LoRA artifacts from checkpoint state dict")
             cpu_state = _clean_lora_state_dict(cpu_state)
         else:
-            print("[CHECKPOINT DEBUG] No LoRA artifacts found in state dict")
 
         self._logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
-        print(f"[CHECKPOINT DEBUG] Weight gathering complete in {time.time() - start_time:.2f}s")
 
         return cpu_state
 
@@ -269,7 +248,6 @@ class WeightCheckpointManager:
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
 
-        print(f"[CHECKPOINT DEBUG] Saving checkpoint to {step_path}")
         self._logger.debug(f"Saving weight checkpoint to {step_path}")
         start_time = time.time()
 
@@ -281,7 +259,6 @@ class WeightCheckpointManager:
             # Save model weights to temporary file to avoid race condition
             model_path = self._get_model_path(step)
             tmp_model_path = model_path.with_suffix(".tmp")
-            print(f"[CHECKPOINT DEBUG] Saving {len(cpu_state)} parameters to {model_path}")
             torch.save(cpu_state, tmp_model_path)
             # Rename temporary file to indicate checkpoint is complete
             tmp_model_path.rename(model_path)
@@ -293,7 +270,6 @@ class WeightCheckpointManager:
             tokenizer.save_pretrained(step_path)
 
         self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
-        print(f"[CHECKPOINT DEBUG] Checkpoint saved successfully in {time.time() - start_time:.2f}s")
 
     def save(
         self,
@@ -317,7 +293,6 @@ class WeightCheckpointManager:
             if not merge_lora:
                 merge_lora = _has_lora_layers(model)
         
-        print(f"[CHECKPOINT DEBUG] Starting checkpoint save for step {step}, merge_lora={merge_lora}")
 
         cpu_state = self._gather_weights(model, dtype, merge_lora)
         if _has_tt_moe_layers(cpu_state):
