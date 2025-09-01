@@ -180,14 +180,11 @@ class WeightCheckpointManager:
     def _gather_weights(self, model: nn.Module, dtype: torch.dtype = torch.bfloat16, merge_lora: bool = False) -> dict[str, Tensor]:
         """Gather distributed weights for weight checkpoint."""
         start_time = time.time()
-        self._logger.debug("Gathering sharded weights")
         
         # Handle LoRA merging if requested and model has LoRA layers
         original_lora_state = None
         if merge_lora and _has_lora_layers(model):
-            self._logger.debug("Temporarily merging LoRA weights for checkpoint")
             original_lora_state = _merge_lora_weights_inplace(model)
-        else:
 
         try:
             # Suppress torch.distributed warnings during checkpoint saving
@@ -214,16 +211,11 @@ class WeightCheckpointManager:
         finally:
             # Always restore original LoRA state, even if gathering fails
             if original_lora_state is not None:
-                self._logger.debug("Restoring original LoRA weights")
                 _restore_lora_weights_inplace(model, original_lora_state)
 
         # Always clean up the state dict for HF compatibility
         if any('.base_layer.' in key or 'lora_A' in key or 'lora_B' in key for key in cpu_state.keys()):
-            self._logger.debug("Cleaning LoRA artifacts from checkpoint state dict")
             cpu_state = _clean_lora_state_dict(cpu_state)
-        else:
-
-        self._logger.debug(f"Gathered sharded weights in {time.time() - start_time:.2f} seconds")
 
         return cpu_state
 
@@ -232,7 +224,6 @@ class WeightCheckpointManager:
         step_path = self._get_step_path(step)
         step_path.mkdir(parents=True, exist_ok=True)
 
-        self._logger.debug(f"Saving weight checkpoint to {step_path}")
         start_time = time.time()
 
         # Suppress torch.distributed warnings during checkpoint saving
@@ -252,8 +243,6 @@ class WeightCheckpointManager:
             if model.generation_config:
                 model.generation_config.save_pretrained(step_path)
             tokenizer.save_pretrained(step_path)
-
-        self._logger.debug(f"Saved weight checkpoint to {step_path} in {time.time() - start_time:.2f} seconds")
 
     def save(
         self,
@@ -308,9 +297,6 @@ class WeightCheckpointManager:
             <= self.async_level
         )
         if not (keep_for_eval or keep_for_ckpt):
-            self._logger.debug(
-                f"Removing past weight checkpoint {candidate_path_to_delete} ({keep_for_eval=}, {keep_for_ckpt=})"
-            )
             shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
 
     def maybe_clean(self, step: int):
