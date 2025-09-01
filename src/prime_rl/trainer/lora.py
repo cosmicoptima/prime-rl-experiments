@@ -166,7 +166,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = True
             trainable_params += 1
             trainable_details.append(f"{name} (trainable_modules)")
-            logger.debug(f"Keeping {name} trainable (matches trainable_modules pattern)")
+            logger.info(f"Keeping {name} trainable (matches trainable_modules pattern)")
         # Freeze everything else
         else:
             param.requires_grad = False
