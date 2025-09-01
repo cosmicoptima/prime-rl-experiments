@@ -4,7 +4,7 @@ max_steps = 500
 project = "celeste-0001"
 
 [model]
-name = "Qwen/Qwen2.5-32B-Instruct"
+name = "arcee-ai/GLM-4-32B-Base-32K"
 liger_kernel = true
 
 [model.lora]

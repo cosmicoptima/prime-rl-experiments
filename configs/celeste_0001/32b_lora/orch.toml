@@ -6,7 +6,7 @@ rollouts_per_example = 8
 mask_truncated_completions = false
 
 [model]
-name = "Qwen/Qwen2.5-32B-Instruct"
+name = "arcee-ai/GLM-4-32B-Base-32K"
 
 [monitor.wandb]
 project = "celeste-0001"
