@@ -208,8 +208,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
     logger.info(f"Trainable parameters: {trainable_details}")
     
     # Show some frozen parameters for debugging
-    if frozen_details and logger.level <= 10:  # DEBUG level
-        logger.debug(f"First 10 frozen parameters: {frozen_details[:10]}")
+    logger.debug(f"First 10 frozen parameters: {frozen_details[:10]}")
 
 
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
