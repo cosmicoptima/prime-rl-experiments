@@ -139,8 +139,10 @@ def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bo
     - "model.embed_tokens.weight" (full parameter name)
     - "model.embed_tokens" (module name)
     """
+    logger = get_logger()
+
     if "embed_tokens" in param_name:
-        print(f"CHECKING {param_name} against {trainable_patterns}")
+        logger.info(f"CHECKING {param_name} against {trainable_patterns}")
 
     # Check full parameter name
     for pattern in trainable_patterns:
@@ -154,7 +156,7 @@ def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bo
             return True
     
     if "embed_tokens" in param_name:
-        print("FALSE")
+        logger.info("FALSE")
     
     return False
 
