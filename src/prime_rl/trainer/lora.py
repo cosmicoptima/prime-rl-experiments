@@ -132,10 +132,24 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
 
 
 def _should_keep_trainable(param_name: str, trainable_patterns: List[str]) -> bool:
-    """Check if a parameter should remain fully trainable."""
+    """Check if a parameter should remain fully trainable.
+    
+    Checks both the full parameter name and the parent module name against patterns.
+    For example, for param "model.embed_tokens.weight", it checks both:
+    - "model.embed_tokens.weight" (full parameter name)
+    - "model.embed_tokens" (module name)
+    """
+    # Check full parameter name
     for pattern in trainable_patterns:
         if re.match(pattern, param_name):
             return True
+    
+    # Also check module name (remove .weight, .bias, etc suffix)
+    module_name = param_name.rsplit('.', 1)[0] if '.' in param_name else param_name
+    for pattern in trainable_patterns:
+        if re.match(pattern, module_name):
+            return True
+    
     return False
 
 
@@ -182,10 +196,14 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = True
             trainable_params += 1
             trainable_details.append(f"{name} (trainable_modules)")
-            # Log which pattern matched
+            # Log which pattern matched and whether it was param or module name
+            module_name = name.rsplit('.', 1)[0] if '.' in name else name
             for pattern in config.trainable_modules:
                 if re.match(pattern, name):
-                    logger.info(f"✓ Keeping {name} trainable (matched pattern: '{pattern}')")
+                    logger.info(f"✓ Keeping {name} trainable (matched parameter pattern: '{pattern}')")
+                    break
+                elif re.match(pattern, module_name):
+                    logger.info(f"✓ Keeping {name} trainable (matched module pattern: '{pattern}' on module '{module_name}')")
                     break
         # Freeze everything else
         else:
