@@ -10,7 +10,7 @@ liger_kernel = true
 [model.lora]
 enabled = true
 rank = 16
-alpha = 256.0
+alpha = 32.0
 dropout = 0.05
 target_modules = [
    ".*\\.q_proj$",
