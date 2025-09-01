@@ -10,7 +10,7 @@ liger_kernel = true
 [model.lora]
 enabled = true
 rank = 16
-alpha = 32.0
+alpha = 256.0
 dropout = 0.05
 target_modules = [
    ".*\\.q_proj$",
@@ -30,8 +30,9 @@ freq = 1
 
 [optim]
 lr = 1e-6
-max_norm = 0.001
+max_norm = 0.01
 weight_decay = 0.001
+type = "adamw"
 
 [ckpt]
 interval = 100
