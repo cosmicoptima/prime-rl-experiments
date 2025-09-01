@@ -5,6 +5,7 @@ project = "celeste-0001"
 
 [model]
 name = "Qwen/Qwen2.5-7B-Instruct"
+liger_kernel = true
 
 [model.ac]
 freq = 1
