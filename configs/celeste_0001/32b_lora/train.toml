@@ -4,7 +4,7 @@ max_steps = 500
 project = "celeste-0001"
 
 [model]
-name = "cosmicoptima/GLM-4-32B-Base-32K"
+name = "Qwen/Qwen2.5-32B-Instruct"
 liger_kernel = true
 
 [model.lora]
@@ -32,7 +32,6 @@ freq = 1
 lr = 1e-6
 max_norm = 0.001
 weight_decay = 0.001
-type = adamw_4bit
 
 [ckpt]
 interval = 100
