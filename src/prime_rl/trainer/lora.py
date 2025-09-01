@@ -168,20 +168,20 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
     trainable_details = []
     
     # First, log all modules in the model for debugging
-    logger.info("=== ALL MODULES IN MODEL ===")
-    for name, module in model.named_modules():
-        if name:  # Skip the root module
-            logger.info(f"Module: {name} -> {module.__class__.__name__}")
+    # logger.info("=== ALL MODULES IN MODEL ===")
+    # for name, module in model.named_modules():
+    #     if name:  # Skip the root module
+    #         logger.info(f"Module: {name} -> {module.__class__.__name__}")
     
     logger.info("=== ALL PARAMETERS IN MODEL ===")
     for name, param in model.named_parameters():
         logger.info(f"Parameter: {name} -> shape={param.shape}, requires_grad={param.requires_grad}")
     
-    logger.info("=== TRAINABLE PATTERNS ===")
-    logger.info(f"LoRA is looking for: ['lora_A', 'lora_B']")
-    logger.info(f"Trainable modules patterns: {config.trainable_modules}")
+    # logger.info("=== TRAINABLE PATTERNS ===")
+    # logger.info(f"LoRA is looking for: ['lora_A', 'lora_B']")
+    # logger.info(f"Trainable modules patterns: {config.trainable_modules}")
     
-    logger.info("=== PROCESSING PARAMETERS ===")
+    # logger.info("=== PROCESSING PARAMETERS ===")
     for name, param in model.named_parameters():
         total_params += 1
         
@@ -211,9 +211,9 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             frozen_params += 1
             logger.debug(f"✗ Freezing {name}")
     
-    logger.info(f"=== FINAL SUMMARY ===")
-    logger.info(f"Parameter freezing: {frozen_params} frozen, {trainable_params} trainable, {total_params} total")
-    logger.info(f"Trainable parameters: {trainable_details}")
+    # logger.info(f"=== FINAL SUMMARY ===")
+    # logger.info(f"Parameter freezing: {frozen_params} frozen, {trainable_params} trainable, {total_params} total")
+    # logger.info(f"Trainable parameters: {trainable_details}")
 
 
 def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
