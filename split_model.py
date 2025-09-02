@@ -12,13 +12,24 @@ current_shard = {}
 current_size = 0
 shard_idx = 1
 
+# First pass to count total shards
+total_shards = 1
+temp_size = 0
+for key, tensor in state_dict.items():
+    tensor_size = tensor.numel() * tensor.element_size()
+    if temp_size + tensor_size > shard_size and temp_size > 0:
+        total_shards += 1
+        temp_size = 0
+    temp_size += tensor_size
+
+# Now split with known total
 for key, tensor in state_dict.items():
     tensor_size = tensor.numel() * tensor.element_size()
     
     if current_size + tensor_size > shard_size and current_shard:
         # Save current shard
-        save_file(current_shard, f"model-{shard_idx:05d}-of-NNNNN.safetensors")
-        shards[f"model-{shard_idx:05d}-of-NNNNN.safetensors"] = list(current_shard.keys())
+        save_file(current_shard, f"{sys.argv[2]}/model-{shard_idx:05d}-of-{total_shards:05d}.safetensors")
+        shards[f"model-{shard_idx:05d}-of-{total_shards:05d}.safetensors"] = list(current_shard.keys())
         current_shard = {}
         current_size = 0
         shard_idx += 1
@@ -28,8 +39,8 @@ for key, tensor in state_dict.items():
 
 # Save last shard
 if current_shard:
-    save_file(current_shard, f"{sys.argv[2]}/model-{shard_idx:05d}-of-NNNNN.safetensors")
-    shards[f"model-{shard_idx:05d}-of-NNNNN.safetensors"] = list(current_shard.keys())
+    save_file(current_shard, f"{sys.argv[2]}/model-{shard_idx:05d}-of-{total_shards:05d}.safetensors")
+    shards[f"model-{shard_idx:05d}-of-{total_shards:05d}.safetensors"] = list(current_shard.keys())
 
 # Create index file
 import json
@@ -43,5 +54,5 @@ index = {
     "weight_map": {k: shard for shard, keys in shards.items() for k in keys}
 }
 
-with open(f"sys.argv[2]/model.safetensors.index.json", "w") as f:
+with open(f"{sys.argv[2]}/model.safetensors.index.json", "w") as f:
     json.dump(index, f, indent=2)
